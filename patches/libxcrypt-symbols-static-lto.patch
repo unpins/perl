@@ -1,0 +1,38 @@
+Filter `<file>.c.<hex>` LTO-unit markers from the static-symbols assertion.
+
+`test/symbols-static.pl` walks `nm libcrypt.a` and demands that every
+remaining global symbol be listed in `libcrypt.map.in`. With `-flto
+-ffat-lto-objects` (the chain-wide LTO build path used by unpins), gcc
+emits one global identifier per translation unit of the form
+`<basename>.c.<8-hex-hash>` — these are GCC's LTO unit markers, combined
+with the build's `-frandom-seed` to keep the hash stable per source file.
+They live in the archive's `.gnu.lto_*` sections, are not part of the
+library's public ABI (no caller can reach them — they have no signature),
+and `--gc-sections` drops them out of any final exec anyway. Tightening
+the existing private-symbol filter to also skip them keeps the assertion
+useful while not flagging build-toolchain bookkeeping as ABI churn.
+
+Equivalent in spirit to libxcrypt's already-present `_crypt_` / `_[_A-Y]`
+filter, which strips C-runtime and library-private symbols for the same
+reason. Upstreamable: the LTO interaction shows up on any distribution
+build with chain-wide LTO and ffat-lto-objects enabled.
+
+--- a/test/symbols-static.pl
++++ b/test/symbols-static.pl
+@@ -44,10 +44,15 @@ sub list_library_globals {
+     # Symbols that begin with _[_A-Y] are private to the C
+     # implementation.  All other symbols (including any that begin
+     # with _Z, which are C++ mangled names) are part of the library's
+     # public interface.
++    #
++    # `<file>.c.<hex-hash>` symbols are GCC LTO unit markers emitted
++    # under `-flto -ffat-lto-objects` combined with `-frandom-seed`.
++    # They're metadata for LTO archive indexing, not ABI exports.
+     return get_symbols(
+         find_real_library(shift, 'static'),
+-        sub { $_[0] !~ /^_(?:[_A-Y]|crypt_)/ },
++        sub { $_[0] !~ /^_(?:[_A-Y]|crypt_)/
++           && $_[0] !~ /\.c\.[0-9a-f]+\z/ },
+     );
+ }
+
