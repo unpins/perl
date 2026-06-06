@@ -18,7 +18,7 @@ unpin perl -e 'print "hello\n"'
 unpin perl script.pl
 ```
 
-Installing also adds the bundled utilities (`json_pp`, `shasum`, `prove`, `cpan`, `pod2man`, …) as their own commands:
+`unpin install perl` also creates 16 bundled commands — `cpan`, `json_pp`, `shasum`, `prove`, `pod2man`, … (full list: `unpin info perl`):
 
 ```bash
 unpin install perl
@@ -51,6 +51,5 @@ The language reference and the bundled tools are embedded — read them with `un
 
 ## Build notes
 
-- **Single binary, no data archive.** The whole module tree is packed into the executable as a ZIP and `@INC` is served from it: `open`/`stat` are intercepted at the linker level (Linux/Windows via `-Wl,--wrap`; macOS via `llvm-objcopy --redefine-sym`), so there is no perl source patch.
-- **Bundled commands (16)** — `cpan`, `corelist`, `json_pp`, `pod2man`, `prove`, `shasum`, `zipdetails`, … — embedded and reachable by name. The XS-codegen/dev tools and `.pod`-dependent `perldoc`/`splain` are left out.
-- **No XS modules** (`-Uusedl`, inherent to a static binary). Pure-Perl modules still install — `cpan` writes to a per-user cache prepended to `@INC`, never the read-only binary.
+- **One file, no data archive.** The module tree is a ZIP appended to the executable, and `@INC` is served from it by intercepting `open`/`stat` at the linker level (Linux/Windows `-Wl,--wrap`, macOS `llvm-objcopy --redefine-sym`) — no perl source patch.
+- **No XS modules** (`-Uusedl`, inherent to a static binary). Pure-Perl modules still install: `cpan` writes to a per-user cache prepended to `@INC`, never the read-only binary.
