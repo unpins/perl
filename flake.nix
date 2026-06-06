@@ -69,6 +69,16 @@
           sp = pkgs.pkgsStatic;            # static set the binary is built from
           host = sp.stdenv.hostPlatform;
           isDarwin = host.isDarwin or false;
+          # When the build host can't run target binaries, nixpkgs builds perl
+          # with perl-cross, whose own ./configure ignores config.over (the native
+          # @INC/install pin). Those targets get the equivalent fixup applied to
+          # config.sh in postConfigure instead. Mirrors interpreter.nix's own
+          # `crossCompiling`.
+          crossCompiling = !(sp.stdenv.buildPlatform.canExecute host);
+          # 32-bit musl is _REDIR_TIME64: stat/lstat are renamed to
+          # __stat_time64/__lstat_time64 in the headers, so the VFS must wrap those
+          # symbols too (see src/vfs_miniz.c). Linux-only; darwin targets are 64-bit.
+          wrap32 = (host.parsed.cpu.bits or 64) == 32;
           prefix = sp.stdenv.cc.targetPrefix;
 
           perlPatches = [ ./patches/ext-re-static-aux.patch ];
@@ -92,6 +102,20 @@
             done
             unset __v __cur __suf
             EOF
+          '';
+
+          # perl-cross equivalent of zipConfigOver: config.over is ignored by
+          # perl-cross, so apply the same @INC (*exp -> /zip) and install-tree
+          # (lib/perl5 -> share/perl5) transforms directly to the generated
+          # config.sh, then regenerate config.h + Makefile.config from it.
+          zipConfigCross = ''
+            ${pkgs.buildPackages.perl}/bin/perl ${./src/cross_config.pl} config.sh
+            # perl-cross skips staging static-XS .pm (List::Util/File::Spec/...);
+            # patch the Makefile's static rule to also run pm_to_blib.
+            ${pkgs.buildPackages.perl}/bin/perl ${./src/cross_static_pm.pl} Makefile
+            rm -f config.h
+            CONFIG_H=config.h CONFIG_SH=config.sh ./config_h.SH >/dev/null 2>&1
+            make Makefile.config >/dev/null 2>&1
           '';
 
           remapPostInstall = postInstall:
@@ -135,7 +159,19 @@
 
           mkPerl = { nixLdflags ? null, buildPhase ? null, extraPostInstall ? "" }:
             sp.perl.overrideAttrs (old: {
-              patches = (old.patches or [ ]) ++ perlPatches;
+              # On a case-insensitive FS (macOS) perl-cross's `configure` clobbers
+              # perl's `Configure` during the cross overlay, so nixpkgs'
+              # no-sys-dirs.patch (which patches Configure) can't apply. The cross
+              # build uses perl-cross's own configure, so that patch is moot there
+              # -- drop it for the darwin cross. Linux crosses keep it (it applies
+              # and is harmless).
+              patches = (
+                let base = old.patches or [ ];
+                in if crossCompiling && isDarwin
+                then builtins.filter
+                  (p: !(sp.lib.hasInfix "no-sys-dirs" (toString p))) base
+                else base
+              ) ++ perlPatches;
               configureFlags = (old.configureFlags or [ ]) ++ [ "-Dusesitecustomize" ]
                 ++ (if isDarwin then [ "-Dranlib=${prefix}ranlib" ] else [ ]);
               # macOS: installperl gates install_name_tool on `&& useshrplib`, but
@@ -147,6 +183,8 @@
                   --replace-fail '&& $Config{useshrplib}' '&& $Config{useshrplib} eq "true"'
               '' else "");
               preConfigure = (old.preConfigure or "") + zipConfigOver;
+              postConfigure = (old.postConfigure or "")
+                + sp.lib.optionalString crossCompiling zipConfigCross;
               postInstall = remapPostInstall (old.postInstall or "")
                 + scrubNix + installSiteCustomize + extraPostInstall;
             }
@@ -180,7 +218,14 @@
             _binary_incblob_start:
             .incbin "incblob"
             _binary_incblob_end:
+            /* GNU-stack note: 32-bit ARM uses `@` as the comment char, so the
+               section type must be `%progbits` there; every other ELF arch wants
+               `@progbits`. blob.S is preprocessed ($CC -c), so branch on __arm__. */
+            #if defined(__arm__)
+            .section .note.GNU-stack,"",%progbits
+            #else
             .section .note.GNU-stack,"",@progbits
+            #endif
           '';
           blobDarwinS = pkgs.writeText "blob_darwin.S" ''
             .section __TEXT,__const
@@ -225,7 +270,7 @@
             name = "perl-vfs-o";
             dontUnpack = true;
             buildPhase = ''
-              $CC -O2 -I${./src} -c ${./src/vfs_miniz.c} -o vfs.o
+              $CC -O2 ${sp.lib.optionalString wrap32 "-DUNPIN_WRAP_TIME64"} -I${./src} -c ${./src/vfs_miniz.c} -o vfs.o
               $CC -O2 -I${./src} -c ${./src/miniz.c} -o miniz.o
             '';
             installPhase = ''mkdir -p $out; cp vfs.o miniz.o $out/'';
@@ -255,6 +300,7 @@
           # the env gate keeps the VFS dormant there).
           linuxVfs = mkPerl {
             nixLdflags = "--wrap=open --wrap=stat --wrap=lstat --wrap=access --wrap=main "
+              + sp.lib.optionalString wrap32 "--wrap=__stat_time64 --wrap=__lstat_time64 "
               + "${vfsObj}/vfs.o ${vfsObj}/miniz.o ${dispatchObj}/dispatch.o ${blobObj}/incblob.o";
             extraPostInstall = dropAndAlias;
           };

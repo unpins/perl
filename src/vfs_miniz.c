@@ -339,4 +339,35 @@ int ACCESS_FN(const char *path, int mode) {
     return REAL_ACCESS(path, mode);
 }
 
+#ifdef UNPIN_WRAP_TIME64
+/* 32-bit musl (armv7l, i686, ...) is _REDIR_TIME64: <sys/stat.h> renames stat/
+ * lstat to __stat_time64/__lstat_time64 via an __asm__ label, so perl's stat()
+ * call references THOSE symbols, not `stat`. --wrap=stat then wraps a symbol
+ * nobody calls and the real statx escapes the VFS. Wrap the time64 names too
+ * (struct stat is already the time64 layout on these arches, so fill_stat is
+ * correct). Linux-only; passed via -DUNPIN_WRAP_TIME64 for 32-bit hosts. */
+extern int __real___stat_time64(const char *path, struct stat *st);
+extern int __real___lstat_time64(const char *path, struct stat *st);
+
+int __wrap___stat_time64(const char *path, struct stat *st) {
+    const char *key = posix_key(path);
+    if (key) {
+        int i = vfs_find(key);
+        if (i >= 0) return fill_stat(st, entry_size(i));
+        errno = ENOENT; return -1;
+    }
+    return __real___stat_time64(path, st);
+}
+
+int __wrap___lstat_time64(const char *path, struct stat *st) {
+    const char *key = posix_key(path);
+    if (key) {
+        int i = vfs_find(key);
+        if (i >= 0) return fill_stat(st, entry_size(i));
+        errno = ENOENT; return -1;
+    }
+    return __real___lstat_time64(path, st);
+}
+#endif /* UNPIN_WRAP_TIME64 */
+
 #endif /* _WIN32 vs POSIX */
