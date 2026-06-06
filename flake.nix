@@ -181,7 +181,14 @@
               postPatch = (old.postPatch or "") + (if isDarwin then ''
                 substituteInPlace installperl \
                   --replace-fail '&& $Config{useshrplib}' '&& $Config{useshrplib} eq "true"'
-              '' else "");
+              '' else "")
+              # perl-cross assumes an ELF build host (readelf/objdump); on a
+              # darwin build host (the darwin<->darwin cross) those tools are
+              # absent and useless on Mach-O, so rewrite the two probes that
+              # need them to compile-only, cross-safe equivalents.
+              + sp.lib.optionalString (crossCompiling && isDarwin) ''
+                ${pkgs.buildPackages.perl}/bin/perl ${./src/cross_darwin.pl}
+              '';
               preConfigure = (old.preConfigure or "") + zipConfigOver;
               postConfigure = (old.postConfigure or "")
                 + sp.lib.optionalString crossCompiling zipConfigCross;
