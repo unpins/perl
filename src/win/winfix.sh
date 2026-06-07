@@ -38,6 +38,24 @@ setv _exe "'.exe'"
 setv exe_ext "'.exe'"
 setv usesitecustomize "'define'"
 
+# 2b) Canonical win32 signal table from config.gc. perl-cross derives a SPARSE,
+#     count-sized table for the mingw target (sig_size=7, sig_name='ZERO INT ILL
+#     ABRT FPE SEGV TERM', sig_num='0 2 4 22 8 11 15'). But perl indexes
+#     PL_psig_ptr by signal NUMBER while allocating it to SIG_SIZE slots, so a
+#     read of $SIG{TERM} (15) or $SIG{ABRT} (22) runs off the 7-slot array into
+#     heap garbage -> magic_getsig's sv_setsv hits a bogus SV ("Bizarre copy of
+#     HASH/UNKNOWN", or an intermittent ~null deref crash, depending on what's in
+#     the heap). Only INT(2)/ILL(4) stay in bounds, which is why it's flaky rather
+#     than total. config.gc carries the DENSE, index-aligned table real Windows
+#     perl ships (sig_size=27, covering ABRT=22/CONT=25), so copy it verbatim.
+#     wf_overlay.pl skips sig_* on purpose (its allow-list is d_*/i_*/*format),
+#     so set them explicitly here; config_h.SH (step 6) then bakes SIG_NAME/
+#     SIG_NUM/SIG_SIZE into config.h and the build picks them up for Config too.
+for k in sig_name sig_num sig_size sig_name_init sig_num_init; do
+  v="$(sed -nE "s/^$k=(.*)\$/\1/p" "$GCSRC")"
+  [ -n "$v" ] && setv "$k" "$v"
+done
+
 # 2a) Pin the runtime @INC (*exp) to the /zip VFS root. install* dirs stay real so
 #     `make install` lands a harvestable tree (blob keys mirror /zip/<version>/...).
 #     archname is the fixed win64 tag MSWin32-x64. Derive the version from config.sh.
