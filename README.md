@@ -1,13 +1,13 @@
 # perl
 
-Standalone build of [perl](https://www.perl.org/) — the interpreter and its entire standard library in a single self-contained binary.
+[perl](https://www.perl.org/) — the interpreter and its entire standard library in a single self-contained binary, built natively for Linux, macOS, and Windows.
 
 [![CI](https://github.com/unpins/perl/actions/workflows/perl.yml/badge.svg)](https://github.com/unpins/perl/actions)
 ![Linux](https://img.shields.io/badge/Linux-✓-success?logo=linux&logoColor=white)
 ![macOS](https://img.shields.io/badge/macOS-✓-success?logo=apple&logoColor=white)
 ![Windows](https://img.shields.io/badge/Windows-✓-success?logo=windows&logoColor=white)
 
-Part of the [unpins](https://unpins.org) project — native single-binary builds with no third-party runtime dependencies.
+Part of the [unpins](https://unpins.org) catalog; install it with [`unpin`](https://github.com/unpins/unpin): `unpin install perl`.
 
 ## Usage
 
@@ -25,6 +25,10 @@ unpin install perl
 echo '{"b":2,"a":1}' | json_pp
 cpan Some::Module
 ```
+
+## Man pages
+
+The language reference and the bundled tools are embedded — read them with `unpin man perl` or `unpin man perlfunc`.
 
 ## Build locally
 
@@ -44,10 +48,6 @@ The first invocation will offer to add the [unpins.cachix.org](https://unpins.ca
 ## Manual download
 
 The [Releases](https://github.com/unpins/perl/releases) page has standalone binaries for manual download.
-
-## Man pages
-
-The language reference and the bundled tools are embedded — read them with `unpin man perl` or `unpin man perlfunc`.
 
 ## Build notes
 
