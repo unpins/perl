@@ -77,7 +77,7 @@
           crossCompiling = !(sp.stdenv.buildPlatform.canExecute host);
           # 32-bit musl is _REDIR_TIME64: stat/lstat are renamed to
           # __stat_time64/__lstat_time64 in the headers, so the VFS must wrap those
-          # symbols too (see src/vfs_miniz.c). Linux-only; darwin targets are 64-bit.
+          # symbols too (see src/vfs.c). Linux-only; darwin targets are 64-bit.
           wrap32 = (host.parsed.cpu.bits or 64) == 32;
           prefix = sp.stdenv.cc.targetPrefix;
 
@@ -250,8 +250,9 @@
           # to /zip/bin/perl so no /nix path leaks), drop the dev/compile + perldoc
           # files (.a/.h/.ld/.pod, CORE/), and pack it all into one `zip -9`
           # archive. The VFS strips the "/zip/" mount prefix on lookup, so archive
-          # keys are "share/perl5/..." and "bin/<name>". Same proven ZIP container
-          # the vim package ships -- one VFS format in the catalog, no bespoke one.
+          # keys are "share/perl5/..." and "bin/<name>". Read back by the shared
+          # unpin-vfs core (src/vfs.c, github:unpins/unpin-vfs) on its deflate path
+          # -- zstd stays off here, so it is the same plain ZIP the vim package ships.
           blobObj = sp.stdenv.mkDerivation {
             name = "perl-incblob";
             dontUnpack = true;
@@ -277,7 +278,7 @@
             name = "perl-vfs-o";
             dontUnpack = true;
             buildPhase = ''
-              $CC -O2 ${sp.lib.optionalString wrap32 "-DUNPIN_WRAP_TIME64"} -I${./src} -c ${./src/vfs_miniz.c} -o vfs.o
+              $CC -O2 ${sp.lib.optionalString wrap32 "-DUNPIN_WRAP_TIME64"} -I${./src} -c ${./src/vfs.c} -o vfs.o
               $CC -O2 -I${./src} -c ${./src/miniz.c} -o miniz.o
             '';
             installPhase = ''mkdir -p $out; cp vfs.o miniz.o $out/'';

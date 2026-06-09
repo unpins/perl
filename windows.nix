@@ -97,7 +97,7 @@ let
     name = "perl-vfs-win-o";
     dontUnpack = true;
     buildPhase = ''
-      $CC -O2 -std=gnu17 -I${./src} -c ${./src/vfs_miniz.c} -o vfs.o
+      $CC -O2 -std=gnu17 -I${./src} -c ${./src/vfs.c} -o vfs.o
       $CC -O2 -std=gnu17 -I${./src} -c ${./src/miniz.c} -o miniz.o
     '';
     installPhase = ''mkdir -p $out; cp vfs.o miniz.o $out/'';
