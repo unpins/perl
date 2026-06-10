@@ -62,15 +62,32 @@ let
   # ---- A: harvest build (installs lib/perl5; no blob, no wraps) ----
   treePerl = mkWinPerl { };
 
+  # build-time tool: packs the @INC tree into a zstd-in-zip blob (ZIP method 93).
+  # Build-host native (the blob is arch/OS-independent), links libzstd to compress;
+  # the shipped perl.exe decodes with the vendored zstddeclib.c, no zstd runtime.
+  packTool = pkgs.buildPackages.stdenv.mkDerivation {
+    name = "unpin-vfs-pack";
+    dontUnpack = true;
+    buildInputs = [ pkgs.buildPackages.zstd ];
+    buildPhase = ''
+      # -DMINIZ_NO_TIME: fix entry timestamps (0) instead of time(NULL), so the
+      # packed blob is byte-deterministic / reproducible.
+      $CC -O2 -DMINIZ_USE_ZSTD -DMINIZ_NO_TIME -I${./src} \
+        ${./src/unpin-vfs-pack.c} ${./src/miniz.c} ${./src/unpin_zstd.c} \
+        -o unpin-vfs-pack -lzstd
+    '';
+    installPhase = ''mkdir -p $out/bin; cp unpin-vfs-pack $out/bin/'';
+  };
+
   # ---- blob: pack the @INC tree (<ver>/...) + applet scripts (bin/<x>, shebang
   # scrubbed to /zip/bin/perl so no /nix path leaks) + sitecustomize.pl
-  # (<ver>/site_perl/...) into one `zip -9` archive. The VFS strips the "/zip/"
-  # mount prefix on lookup, so archive keys are root-relative. Same proven ZIP
-  # container as the Linux/darwin backends and the vim package. ----
+  # (<ver>/site_perl/...) into one zstd-in-zip archive (unpin-vfs-pack, method 93).
+  # The VFS strips the "/zip/" mount prefix on lookup, so archive keys are
+  # root-relative. Same container as the Linux/darwin backends. ----
   blobObj = cross.stdenv.mkDerivation {
     name = "perl-incblob-win";
     dontUnpack = true;
-    nativeBuildInputs = [ pkgs.zip ];
+    nativeBuildInputs = [ packTool pkgs.buildPackages.zstd ];
     buildPhase = ''
       runHook preBuild
       # stage a writable copy of the @INC tree, the applet scripts, sitecustomize
@@ -84,8 +101,17 @@ let
       cp ${winSrc}/sitecustomize_win.pl "stage/$__ver/site_perl/sitecustomize.pl"
       find stage -type f \( -name '*.a' -o -name '*.h' -o -name '*.ld' \
         -o -name '*.pod' -o -path '*/CORE/*' \) -delete
-      ( cd stage && zip -9 -X -r -q ../blob.bin . )
-      [ -f blob.bin ] || mv blob.bin.zip blob.bin
+      # scrub any residual /nix store path out of every staged text file (the
+      # treePerl Config scrub runs upstream): the STORED shared dict would else
+      # bake store-path hashes verbatim, retained by nix as spurious refs.
+      grep -rlI '/nix/store/' stage 2>/dev/null | while read -r f; do
+        sed -i -E "s#/nix/store/[a-z0-9]{32}-[^ '\":]*#/unpin#g" "$f"
+      done
+      # train a shared zstd dict over the staged payload (stable order =>
+      # reproducible) and pack every entry against it; the dict ships as the
+      # STORED ".unpin/zdict" entry, auto-loaded by the VFS at init.
+      ( cd stage && zstd -q -f --train $(find . -type f | LC_ALL=C sort) -o ../zdict --maxdict=112640 )
+      ( cd stage && unpin-vfs-pack ../blob.bin . --dict ../zdict )
       cp ${winSrc}/blob.S blob.S
       $CC -c blob.S -o incblob.o
       runHook postBuild
@@ -97,10 +123,11 @@ let
     name = "perl-vfs-win-o";
     dontUnpack = true;
     buildPhase = ''
-      $CC -O2 -std=gnu17 -I${./src} -c ${./src/vfs.c} -o vfs.o
-      $CC -O2 -std=gnu17 -I${./src} -c ${./src/miniz.c} -o miniz.o
+      $CC -O2 -std=gnu17 -DMINIZ_USE_ZSTD -I${./src} -c ${./src/vfs.c} -o vfs.o
+      $CC -O2 -std=gnu17 -DMINIZ_USE_ZSTD -I${./src} -c ${./src/miniz.c} -o miniz.o
+      $CC -O2 -std=gnu17 -DMINIZ_USE_ZSTD -DUNPIN_ZSTD_VENDORED -I${./src} -c ${./src/unpin_zstd.c} -o unpin_zstd.o
     '';
-    installPhase = ''mkdir -p $out; cp vfs.o miniz.o $out/'';
+    installPhase = ''mkdir -p $out; cp vfs.o miniz.o unpin_zstd.o $out/'';
   };
 
   dispatchObj = cross.stdenv.mkDerivation {
@@ -127,7 +154,7 @@ let
       relink=$(make -n perl | grep -E -- '-o perl ' | tail -1)
       test -n "$relink" || { echo "could not capture perl link command"; exit 1; }
       WRAP="-Wl,--wrap=win32_open -Wl,--wrap=win32_stat -Wl,--wrap=win32_lstat -Wl,--wrap=win32_access -Wl,--wrap=main"
-      OBJS="${vfsObj}/vfs.o ${vfsObj}/miniz.o ${dispatchObj}/dispatch.o ${blobObj}/incblob.o"
+      OBJS="${vfsObj}/vfs.o ${vfsObj}/miniz.o ${vfsObj}/unpin_zstd.o ${dispatchObj}/dispatch.o ${blobObj}/incblob.o"
       relink="''${relink/-o perl /-o perl $WRAP $OBJS }"
       echo "RELINK: $relink"
       eval "$relink"

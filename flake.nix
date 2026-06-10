@@ -245,29 +245,59 @@
 
           dispatchSrc = ./src/dispatch.c;
 
+          # build-time tool: packs the staged @INC tree into a zstd-in-zip blob
+          # (ZIP method 93). Build-host native -- the blob is arch-independent, so
+          # it links the system libzstd to COMPRESS here; the shipped binary never
+          # does (it decodes with the vendored decompress-only zstddeclib.c).
+          packTool = pkgs.buildPackages.stdenv.mkDerivation {
+            name = "unpin-vfs-pack";
+            dontUnpack = true;
+            buildInputs = [ pkgs.buildPackages.zstd ];
+            buildPhase = ''
+              # -DMINIZ_NO_TIME: the zip writer otherwise stamps each entry with
+              # time(NULL) (current wall clock) -> non-reproducible blob. With it,
+              # timestamps are fixed (0), so the packed blob is byte-deterministic.
+              $CC -O2 -DMINIZ_USE_ZSTD -DMINIZ_NO_TIME -I${./src} \
+                ${./src/unpin-vfs-pack.c} ${./src/miniz.c} ${./src/unpin_zstd.c} \
+                -o unpin-vfs-pack -lzstd
+            '';
+            installPhase = ''mkdir -p $out/bin; cp unpin-vfs-pack $out/bin/'';
+          };
+
           # blob: stage the harvested @INC tree (share/perl5, incl. the runtime
           # sitecustomize.pl) + the applet scripts (bin/<name>, shebang scrubbed
           # to /zip/bin/perl so no /nix path leaks), drop the dev/compile + perldoc
-          # files (.a/.h/.ld/.pod, CORE/), and pack it all into one `zip -9`
-          # archive. The VFS strips the "/zip/" mount prefix on lookup, so archive
-          # keys are "share/perl5/..." and "bin/<name>". Read back by the shared
-          # unpin-vfs core (src/vfs.c, github:unpins/unpin-vfs) on its deflate path
-          # -- zstd stays off here, so it is the same plain ZIP the vim package ships.
+          # files (.a/.h/.ld/.pod, CORE/), and pack it all into one zstd-in-zip
+          # archive (unpin-vfs-pack, ZIP method 93). The VFS strips the "/zip/"
+          # mount prefix on lookup, so archive keys are "share/perl5/..." and
+          # "bin/<name>". Read back by the shared unpin-vfs core (src/vfs.c,
+          # github:unpins/unpin-vfs) on its zstd path (-DMINIZ_USE_ZSTD).
           blobObj = sp.stdenv.mkDerivation {
             name = "perl-incblob";
             dontUnpack = true;
-            nativeBuildInputs = [ pkgs.zip ];
+            nativeBuildInputs = [ packTool pkgs.buildPackages.zstd ];
             buildPhase = ''
               mkdir -p stage/share stage/bin
-              cp -r ${treePerl}/share/perl5 stage/share/perl5
+              cp -rL ${treePerl}/share/perl5 stage/share/perl5
               chmod -R u+w stage
               find stage -type f \( -name '*.a' -o -name '*.h' -o -name '*.ld' \
                 -o -name '*.pod' -o -path '*/CORE/*' \) -delete
               for a in ${sp.lib.escapeShellArgs applets}; do
                 sed '1s|^#!.*|#!/zip/bin/perl|' "${treePerl}/bin/$a" > "stage/bin/$a"
               done
-              ( cd stage && zip -9 -X -r -q ../incblob share bin )
-              [ -f incblob ] || mv incblob.zip incblob
+              # Scrub any residual /nix store path out of every staged text file
+              # (treePerl already scrubs Config): the STORED shared dict is trained
+              # on this payload and would otherwise bake store-path hashes verbatim,
+              # making nix retain them as spurious references. No-op when clean.
+              grep -rlI '/nix/store/' stage 2>/dev/null | while read -r f; do
+                sed -i -E "s#/nix/store/[a-z0-9]{32}-[^ '\":]*#/unpin#g" "$f"
+              done
+              # Train a shared zstd dictionary over the staged payload (stable file
+              # order => reproducible; zstd --train is deterministic for a fixed
+              # input). Pack every entry against it; the dict ships as the STORED
+              # ".unpin/zdict" entry, auto-loaded by the VFS at init.
+              ( cd stage && zstd -q -f --train $(find . -type f | LC_ALL=C sort) -o ../zdict --maxdict=112640 )
+              ( cd stage && unpin-vfs-pack ../incblob . --dict ../zdict )
               cp ${if isDarwin then blobDarwinS else blobS} blob.S
               $CC -c blob.S -o incblob.o
             '';
@@ -278,10 +308,11 @@
             name = "perl-vfs-o";
             dontUnpack = true;
             buildPhase = ''
-              $CC -O2 ${sp.lib.optionalString wrap32 "-DUNPIN_WRAP_TIME64"} -I${./src} -c ${./src/vfs.c} -o vfs.o
-              $CC -O2 -I${./src} -c ${./src/miniz.c} -o miniz.o
+              $CC -O2 -DMINIZ_USE_ZSTD ${sp.lib.optionalString wrap32 "-DUNPIN_WRAP_TIME64"} -I${./src} -c ${./src/vfs.c} -o vfs.o
+              $CC -O2 -DMINIZ_USE_ZSTD -I${./src} -c ${./src/miniz.c} -o miniz.o
+              $CC -O2 -DMINIZ_USE_ZSTD -DUNPIN_ZSTD_VENDORED -I${./src} -c ${./src/unpin_zstd.c} -o unpin_zstd.o
             '';
-            installPhase = ''mkdir -p $out; cp vfs.o miniz.o $out/'';
+            installPhase = ''mkdir -p $out; cp vfs.o miniz.o unpin_zstd.o $out/'';
           };
 
           dispatchObj = sp.stdenv.mkDerivation {
@@ -309,14 +340,14 @@
           linuxVfs = mkPerl {
             nixLdflags = "--wrap=open --wrap=stat --wrap=lstat --wrap=access --wrap=main "
               + sp.lib.optionalString wrap32 "--wrap=__stat_time64 --wrap=__lstat_time64 "
-              + "${vfsObj}/vfs.o ${vfsObj}/miniz.o ${dispatchObj}/dispatch.o ${blobObj}/incblob.o";
+              + "${vfsObj}/vfs.o ${vfsObj}/miniz.o ${vfsObj}/unpin_zstd.o ${dispatchObj}/dispatch.o ${blobObj}/incblob.o";
             extraPostInstall = dropAndAlias;
           };
           # macOS: no --wrap. Rewrite libperl.a's open/stat symbols by hand, and
           # for the multicall rename perlmain.o's _main -> _real_main so dispatch.o
           # (linked only into the FINAL perl, never miniperl) supplies _main.
           darwinVfs = mkPerl {
-            nixLdflags = "${vfsObj}/vfs.o ${vfsObj}/miniz.o ${blobObj}/incblob.o";
+            nixLdflags = "${vfsObj}/vfs.o ${vfsObj}/miniz.o ${vfsObj}/unpin_zstd.o ${blobObj}/incblob.o";
             buildPhase = ''
               runHook preBuild
               make -j$NIX_BUILD_CORES libperl.a
