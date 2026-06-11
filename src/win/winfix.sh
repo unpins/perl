@@ -57,7 +57,7 @@ for k in sig_name sig_num sig_size sig_name_init sig_num_init; do
 done
 
 # 2a) Pin the runtime @INC (*exp) to the /zip VFS root. install* dirs stay real so
-#     `make install` lands a harvestable tree (blob keys mirror /zip/<version>/...).
+#     `make install` lands a harvestable tree (ZIP keys mirror /zip/<version>/...).
 #     archname is the fixed win64 tag MSWin32-x64. Derive the version from config.sh.
 PV=$("$NPERL" -ne 'print $1 if /^version=.(\d+\.\d+\.\d+).$/' config.sh)
 : "${PV:?could not read perl version from config.sh}"

@@ -13,16 +13,19 @@
   # archive on disk. The standard perl ships a binary that reads its modules
   # from a separate `share/perl5` tree; here that tree is packed into the binary
   # and served at runtime by a linker-level VFS — perl loads `File::Spec`,
-  # `Data::Dumper`, `CPAN`, … straight from the embedded blob.
+  # `Data::Dumper`, `CPAN`, … straight from the embedded ZIP.
   #
   # How the VFS works (no patch to perl's source):
   #   - @INC is pinned to the virtual root `/zip/share/perl5` (config.over sets
   #     the runtime *exp vars; the install dirs stay real so `make install` still
   #     lands a harvestable tree).
   #   - The interpreter's open/stat/lstat/access are intercepted and, for any
-  #     `/zip/...` path, served from a per-file zstd blob compiled into the
-  #     binary (a matched open returns an in-memory fd; everything downstream —
-  #     read/lseek/fstat — works unchanged). `/zip` is a reserved virtual mount
+  #     `/zip/...` path, served from the binary's single embedded metadata/
+  #     runtime ZIP — appended at the executable's EOF by the nix build
+  #     (withUnpinEmbed) and read back by the shared unpin-vfs core in self-EOF
+  #     mode (-DUNPIN_VFS_SELF); entries are zstd (ZIP method 93, shared dict).
+  #     A matched open returns an in-memory fd; everything downstream —
+  #     read/lseek/fstat — works unchanged. `/zip` is a reserved virtual mount
   #     (hijack model, like Cosmopolitan's zipos): a miss is ENOENT, never the
   #     host FS. Linux does this with `-Wl,--wrap`; macOS, which has no `--wrap`,
   #     reaches the same effect by renaming the symbols in libperl.a with
@@ -42,10 +45,8 @@
   # points module installs and @INC at a per-user cache dir at runtime, so `cpan`
   # works without touching the read-only binary.
   #
-  # STATUS: x86_64-linux is green and verified; x86_64-darwin builds and runs.
-  # Windows (Cosmopolitan: `/zip` is native, so the VFS is free) and the aarch64
-  # / armv7l targets are not wired yet — see `windowsBuild` and the per-arch note
-  # on `redefArgs` below. Until then this flake builds the targets it supports.
+  # STATUS: Linux (native + the cross arches), darwin and Windows (mingw-native,
+  # see windows.nix) are all wired through this same embedded-@INC design.
   outputs = { self, unpins-lib }:
     let
       ulib = unpins-lib.lib;
@@ -61,9 +62,10 @@
 
       # The whole embedded-perl pipeline for one target's static package set:
       #   A (treePerl) installs share/perl5 with @INC pinned to /zip      →
-      #   blob packs that tree + the applet scripts into one object       →
-      #   B (vfsPerl)  is the same perl relinked with the VFS + blob, with
-      #                share/perl5 dropped from disk.
+      #   B (vfsPerl)  is the same perl relinked with the VFS (self-EOF), with
+      #                share/perl5 dropped from disk                      →
+      #   withUnpinEmbed stages that tree + the applet scripts and packs the
+      #                binary's single EOF ZIP (aliases + man in the same pack).
       mk = pkgs:
         let
           sp = pkgs.pkgsStatic;            # static set the binary is built from
@@ -126,7 +128,7 @@
 
           # Strip every /nix/store path out of Config_heavy.pl/Config.pm (the
           # only files that leak them; the binary is already clean). Runs in
-          # build A so the blob (and thus B) carries zero nix references.
+          # build A so the embedded payload carries zero nix references.
           scrubNix = ''
             find "$out"/share/perl5 -name 'Config_heavy.pl' -o -name 'Config.pm' | while read -r f; do
               sed -i -E "s#/nix/store/[a-z0-9]{32}-[^ '\":]*#/unpin#g" "$f"
@@ -213,102 +215,43 @@
                 (old.propagatedBuildInputs or [ ]);
             });
 
-          # ---- A: harvest build (no wrap, no blob) ----
+          # ---- A: harvest build (no wrap, no VFS) ----
           treePerl = mkPerl { };
-
-          # ELF stub: name the blob with controlled symbols + keep the stack
-          # non-exec. Mach-O variant below.
-          blobS = pkgs.writeText "blob.S" ''
-            .section .rodata
-            .global _binary_incblob_start
-            .global _binary_incblob_end
-            _binary_incblob_start:
-            .incbin "incblob"
-            _binary_incblob_end:
-            /* GNU-stack note: 32-bit ARM uses `@` as the comment char, so the
-               section type must be `%progbits` there; every other ELF arch wants
-               `@progbits`. blob.S is preprocessed ($CC -c), so branch on __arm__. */
-            #if defined(__arm__)
-            .section .note.GNU-stack,"",%progbits
-            #else
-            .section .note.GNU-stack,"",@progbits
-            #endif
-          '';
-          blobDarwinS = pkgs.writeText "blob_darwin.S" ''
-            .section __TEXT,__const
-            .global _incblob_start
-            .global _incblob_end
-            _incblob_start:
-            .incbin "incblob"
-            _incblob_end:
-          '';
 
           dispatchSrc = ./src/dispatch.c;
 
-          # build-time tool: packs the staged @INC tree into a zstd-in-zip blob
-          # (ZIP method 93). Build-host native -- the blob is arch-independent, so
-          # it links the system libzstd to COMPRESS here; the shipped binary never
-          # does (it decodes with the vendored decompress-only zstddeclib.c).
-          packTool = pkgs.buildPackages.stdenv.mkDerivation {
-            name = "unpin-vfs-pack";
-            dontUnpack = true;
-            buildInputs = [ pkgs.buildPackages.zstd ];
-            buildPhase = ''
-              # -DMINIZ_NO_TIME: the zip writer otherwise stamps each entry with
-              # time(NULL) (current wall clock) -> non-reproducible blob. With it,
-              # timestamps are fixed (0), so the packed blob is byte-deterministic.
-              $CC -O2 -DMINIZ_USE_ZSTD -DMINIZ_NO_TIME -I${./src} \
-                ${./src/unpin-vfs-pack.c} ${./src/miniz.c} ${./src/unpin_zstd.c} \
-                -o unpin-vfs-pack -lzstd
-            '';
-            installPhase = ''mkdir -p $out/bin; cp unpin-vfs-pack $out/bin/'';
-          };
-
-          # blob: stage the harvested @INC tree (share/perl5, incl. the runtime
-          # sitecustomize.pl) + the applet scripts (bin/<name>, shebang scrubbed
-          # to /zip/bin/perl so no /nix path leaks), drop the dev/compile + perldoc
-          # files (.a/.h/.ld/.pod, CORE/), and pack it all into one zstd-in-zip
-          # archive (unpin-vfs-pack, ZIP method 93). The VFS strips the "/zip/"
-          # mount prefix on lookup, so archive keys are "share/perl5/..." and
-          # "bin/<name>". Read back by the shared unpin-vfs core (src/vfs.c,
-          # github:unpins/unpin-vfs) on its zstd path (-DMINIZ_USE_ZSTD).
-          blobObj = sp.stdenv.mkDerivation {
-            name = "perl-incblob";
-            dontUnpack = true;
-            nativeBuildInputs = [ packTool pkgs.buildPackages.zstd ];
-            buildPhase = ''
-              mkdir -p stage/share stage/bin
-              cp -rL ${treePerl}/share/perl5 stage/share/perl5
-              chmod -R u+w stage
-              find stage -type f \( -name '*.a' -o -name '*.h' -o -name '*.ld' \
-                -o -name '*.pod' -o -path '*/CORE/*' \) -delete
-              for a in ${sp.lib.escapeShellArgs applets}; do
-                sed '1s|^#!.*|#!/zip/bin/perl|' "${treePerl}/bin/$a" > "stage/bin/$a"
-              done
-              # Scrub any residual /nix store path out of every staged text file
-              # (treePerl already scrubs Config): the STORED shared dict is trained
-              # on this payload and would otherwise bake store-path hashes verbatim,
-              # making nix retain them as spurious references. No-op when clean.
-              grep -rlI '/nix/store/' stage 2>/dev/null | while read -r f; do
-                sed -i -E "s#/nix/store/[a-z0-9]{32}-[^ '\":]*#/unpin#g" "$f"
-              done
-              # Train a shared zstd dictionary over the staged payload (stable file
-              # order => reproducible; zstd --train is deterministic for a fixed
-              # input). Pack every entry against it; the dict ships as the STORED
-              # ".unpin/zdict" entry, auto-loaded by the VFS at init.
-              ( cd stage && zstd -q -f --train $(find . -type f | LC_ALL=C sort) -o ../zdict --maxdict=112640 )
-              ( cd stage && unpin-vfs-pack ../incblob . --dict ../zdict )
-              cp ${if isDarwin then blobDarwinS else blobS} blob.S
-              $CC -c blob.S -o incblob.o
-            '';
-            installPhase = ''mkdir -p $out; cp incblob.o $out/'';
-          };
+          # Runtime stage for withUnpinEmbed: the harvested @INC tree
+          # (share/perl5, incl. the runtime sitecustomize.pl) + the applet
+          # scripts (bin/<name>, shebang scrubbed to /zip/bin/perl so no /nix
+          # path leaks), minus the dev/compile + perldoc files (.a/.h/.ld/.pod,
+          # CORE/). The nix-lib embed packs it into the binary's single EOF ZIP
+          # (runtime entries zstd method 93 against the shared ".unpin/zdict"
+          # dict it trains). The VFS strips the "/zip/" mount prefix on lookup,
+          # so ZIP keys are "share/perl5/..." and "bin/<name>", read back by the
+          # shared unpin-vfs core in self-EOF mode (-DUNPIN_VFS_SELF).
+          incStage = ''
+            mkdir -p "$__unpin_stage/share" "$__unpin_stage/bin"
+            cp -rL ${treePerl}/share/perl5 "$__unpin_stage/share/perl5"
+            chmod -R u+w "$__unpin_stage"
+            find "$__unpin_stage" -type f \( -name '*.a' -o -name '*.h' -o -name '*.ld' \
+              -o -name '*.pod' -o -path '*/CORE/*' \) -delete
+            for __a in ${sp.lib.escapeShellArgs applets}; do
+              sed '1s|^#!.*|#!/zip/bin/perl|' "${treePerl}/bin/$__a" > "$__unpin_stage/bin/$__a"
+            done
+            # Scrub any residual /nix store path out of every staged text file
+            # (treePerl already scrubs Config): the STORED shared dict is trained
+            # on this payload and would otherwise bake store-path hashes verbatim,
+            # making nix retain them as spurious references. No-op when clean.
+            grep -rlI '/nix/store/' "$__unpin_stage" 2>/dev/null | while read -r f; do
+              sed -i -E "s#/nix/store/[a-z0-9]{32}-[^ '\":]*#/unpin#g" "$f"
+            done
+          '';
 
           vfsObj = sp.stdenv.mkDerivation {
             name = "perl-vfs-o";
             dontUnpack = true;
             buildPhase = ''
-              $CC -O2 -DMINIZ_USE_ZSTD ${sp.lib.optionalString wrap32 "-DUNPIN_WRAP_TIME64"} -I${./src} -c ${./src/vfs.c} -o vfs.o
+              $CC -O2 -DMINIZ_USE_ZSTD -DUNPIN_VFS_SELF ${sp.lib.optionalString wrap32 "-DUNPIN_WRAP_TIME64"} -I${./src} -c ${./src/vfs.c} -o vfs.o
               $CC -O2 -DMINIZ_USE_ZSTD -I${./src} -c ${./src/miniz.c} -o miniz.o
               $CC -O2 -DMINIZ_USE_ZSTD -DUNPIN_ZSTD_VENDORED -I${./src} -c ${./src/unpin_zstd.c} -o unpin_zstd.o
             '';
@@ -336,18 +279,20 @@
           # ---- B: embedded build ----
           # Linux: -Wl,--wrap routes open/stat/… and main through our objects, all
           # passed via NIX_LDFLAGS on every link (harmless for build-time perls;
-          # the env gate keeps the VFS dormant there).
+          # the env gate keeps the VFS dormant there). No blob object: the @INC
+          # ZIP is appended to the installed binary's EOF by withUnpinEmbed and
+          # read back by the VFS's self-EOF mode.
           linuxVfs = mkPerl {
             nixLdflags = "--wrap=open --wrap=stat --wrap=lstat --wrap=access --wrap=main "
               + sp.lib.optionalString wrap32 "--wrap=__stat_time64 --wrap=__lstat_time64 "
-              + "${vfsObj}/vfs.o ${vfsObj}/miniz.o ${vfsObj}/unpin_zstd.o ${dispatchObj}/dispatch.o ${blobObj}/incblob.o";
+              + "${vfsObj}/vfs.o ${vfsObj}/miniz.o ${vfsObj}/unpin_zstd.o ${dispatchObj}/dispatch.o";
             extraPostInstall = dropAndAlias;
           };
           # macOS: no --wrap. Rewrite libperl.a's open/stat symbols by hand, and
           # for the multicall rename perlmain.o's _main -> _real_main so dispatch.o
           # (linked only into the FINAL perl, never miniperl) supplies _main.
           darwinVfs = mkPerl {
-            nixLdflags = "${vfsObj}/vfs.o ${vfsObj}/miniz.o ${vfsObj}/unpin_zstd.o ${blobObj}/incblob.o";
+            nixLdflags = "${vfsObj}/vfs.o ${vfsObj}/miniz.o ${vfsObj}/unpin_zstd.o";
             buildPhase = ''
               runHook preBuild
               make -j$NIX_BUILD_CORES libperl.a
@@ -383,7 +328,17 @@
             meta = (sp.perl.meta or { }) // { mainProgram = "perl"; };
           });
         in
-        ulib.withAliases pkgs { primary = "perl"; aliasesFromSymlinksIn = "bin"; } vfsPerl;
+        # ONE withUnpinEmbed call builds the whole embedded container in a
+        # single pack: the @INC runtime tree (self-EOF VFS), the applet alias
+        # harvest, and the man pages (man = true harvests the drv's own
+        # share/man — exactly what mkStandaloneFlake's embedMan did; the
+        # passthru flag makes it skip its own withMan pass).
+        ulib.withUnpinEmbed pkgs {
+          primary = "perl";
+          aliasesFromSymlinksIn = "bin";
+          man = true;
+          runtimeStage = incStage;
+        } vfsPerl;
     in
     ulib.mkStandaloneFlake {
       inherit self;
@@ -394,7 +349,7 @@
       build = pkgs: mk pkgs;
       # Windows is mingw-NATIVE (not cosmo): nixpkgs' perl-cross cross only goes
       # part-way, so windows.nix runs winfix.sh (postConfigure) to make it a real
-      # win32 target, then relinks with the four win32_* wraps + main wrap + blob.
+      # win32 target, then relinks with the four win32_* wraps + main wrap (self-EOF VFS).
       windowsBuild = import ./windows.nix { inherit ulib applets appletsCsv; };
     };
 }
