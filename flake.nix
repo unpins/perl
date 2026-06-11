@@ -1,5 +1,5 @@
 {
-  description = "Standalone build of perl";
+  description = "perl (interpreter + entire stdlib embedded) as a single self-contained binary";
 
   nixConfig = {
     extra-substituters = [ "https://unpins.cachix.org" ];
