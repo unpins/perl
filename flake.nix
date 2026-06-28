@@ -328,17 +328,14 @@
             meta = (sp.perl.meta or { }) // { mainProgram = "perl"; };
           });
         in
-        # ONE withUnpinEmbed call builds the whole embedded container in a
-        # single pack: the @INC runtime tree (self-EOF VFS), the applet alias
-        # harvest, and the man pages (man = true harvests the drv's own
-        # share/man — exactly what mkStandaloneFlake's embedMan did; the
-        # passthru flag makes it skip its own withMan pass).
-        ulib.withUnpinEmbed pkgs {
-          primary = "perl";
-          aliasesFromSymlinksIn = "bin";
-          man = true;
-          runtimeStage = incStage;
-        } vfsPerl;
+        # The PRISTINE VFS perl base (no embed) + the @INC runtime stage. The
+        # embed runs once, post-build, via mkStandaloneFlake's runtimeEmbed →
+        # unpinEmbedWrap (the single embed path): the @INC runtime tree
+        # (self-EOF VFS), the applet alias harvest (auto from the bin/ symlinks
+        # dropAndAlias leaves), and the man pages (man = true harvests the base's
+        # own share/man).
+        { base = vfsPerl; inherit incStage; };
+      winMod = import ./windows.nix { inherit ulib applets appletsCsv; };
     in
     ulib.mkStandaloneFlake {
       inherit self;
@@ -346,10 +343,14 @@
       embedMan = true;
       smoke = [ "--version" ];
       smokePattern = "This is perl 5";
-      build = pkgs: mk pkgs;
+      build = pkgs: (mk pkgs).base;
       # Windows is mingw-NATIVE (not cosmo): nixpkgs' perl-cross cross only goes
       # part-way, so windows.nix runs winfix.sh (postConfigure) to make it a real
       # win32 target, then relinks with the four win32_* wraps + main wrap (self-EOF VFS).
-      windowsBuild = import ./windows.nix { inherit ulib applets appletsCsv; };
+      windowsBuild = pkgs: (winMod pkgs).base;
+      runtimeEmbed = {
+        native = pkgs: base: { man = true; runtimeStage = (mk pkgs).incStage; };
+        windows = pkgs: base: (winMod pkgs).embed;
+      };
     };
 }

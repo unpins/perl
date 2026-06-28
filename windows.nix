@@ -148,14 +148,16 @@ let
     done
   '';
 in
-# ONE withUnpinEmbed call: @INC runtime tree + applet alias harvest + man
-# (harvest perl.exe's own share/man, falling back to the version-locked
-# nixpkgs perl man — the same graft mkStandaloneFlake's windows path applied;
-# the passthru flag makes it skip its own withMan pass).
-ulib.withUnpinEmbed pkgs {
-  primary = "perl";
-  aliasesFromSymlinksIn = "bin";
-  man = true;
-  manFallback = "${pkgs.perl.man or pkgs.perl}";
-  runtimeStage = winIncStage;
-} vfsPerl
+# The PRISTINE win32 VFS perl base + the embed spec consumed by
+# mkStandaloneFlake's runtimeEmbed.windows → unpinEmbedWrap (the single embed
+# path): @INC runtime tree + applet alias harvest (auto from the bin/ symlinks
+# dropAndAlias leaves) + man (harvest perl.exe's own share/man, falling back to
+# the version-locked nixpkgs perl man — the same graft mkStandaloneFlake applies).
+{
+  base = vfsPerl;
+  embed = {
+    man = true;
+    manFallback = "${pkgs.perl.man or pkgs.perl}";
+    runtimeStage = winIncStage;
+  };
+}
