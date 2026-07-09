@@ -247,13 +247,24 @@
             done
           '';
 
+          # Compile the helper objects from basename sources (copied into the
+          # build cwd, `-I.`), NOT from `-c ${./src/x.c}` absolute store paths.
+          # clang records the compiled source path in the object's debug/STABS
+          # info; with a `/nix/store/…-x.c` arg that bakes a store hash into the
+          # object, which the final binary then retains as a spurious reference.
+          # On Linux the binary is stripped (ref gone), but on darwin the embed
+          # appends the runtime ZIP past `__LINKEDIT`, so `strip` refuses to run
+          # post-embed and the debug source path — hence the store ref — survives
+          # (miniz.c leaked this way). A bare basename records just `miniz.c`, no
+          # store path, so both OSes stay at zero external refs.
           vfsObj = sp.stdenv.mkDerivation {
             name = "perl-vfs-o";
             dontUnpack = true;
             buildPhase = ''
-              $CC -O2 -DMINIZ_USE_ZSTD -DUNPIN_VFS_SELF ${sp.lib.optionalString wrap32 "-DUNPIN_WRAP_TIME64"} -I${./src} -c ${./src/vfs.c} -o vfs.o
-              $CC -O2 -DMINIZ_USE_ZSTD -I${./src} -c ${./src/miniz.c} -o miniz.o
-              $CC -O2 -DMINIZ_USE_ZSTD -DUNPIN_ZSTD_VENDORED -I${./src} -c ${./src/unpin_zstd.c} -o unpin_zstd.o
+              cp ${./src}/*.c ${./src}/*.h .
+              $CC -O2 -DMINIZ_USE_ZSTD -DUNPIN_VFS_SELF ${sp.lib.optionalString wrap32 "-DUNPIN_WRAP_TIME64"} -I. -c vfs.c -o vfs.o
+              $CC -O2 -DMINIZ_USE_ZSTD -I. -c miniz.c -o miniz.o
+              $CC -O2 -DMINIZ_USE_ZSTD -DUNPIN_ZSTD_VENDORED -I. -c unpin_zstd.c -o unpin_zstd.o
             '';
             installPhase = ''mkdir -p $out; cp vfs.o miniz.o unpin_zstd.o $out/'';
           };
@@ -261,7 +272,10 @@
           dispatchObj = sp.stdenv.mkDerivation {
             name = "perl-dispatch-o";
             dontUnpack = true;
-            buildPhase = ''$CC -O2 -c ${dispatchSrc} -o dispatch.o'';
+            buildPhase = ''
+              cp ${dispatchSrc} dispatch.c
+              $CC -O2 -c dispatch.c -o dispatch.o
+            '';
             installPhase = ''mkdir -p $out; cp dispatch.o $out/'';
           };
 
