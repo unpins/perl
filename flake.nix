@@ -340,6 +340,21 @@
                   export READELF="${bcIntrospect} readelf"
                   export OBJDUMP="${bcIntrospect} objdump"
                 ''
+                # The -Accflags=-fno-strict-aliasing above reaches only the TARGET
+                # perl's ccflags. perl-cross builds the build-time miniperl in a
+                # separate `configure --mode=buildmini` respawn that inherits neither
+                # -Accflags nor CFLAGS -- it takes its ccflags from $HOSTCFLAGS
+                # (empty by default). So on the darwin cross the miniperl compiles
+                # under the engine clang WITHOUT -fno-strict-aliasing: the same
+                # SV/magic strict-aliasing miscompile that -Accflags cures for the
+                # target hits miniperl instead, and it segfaults intermittently once
+                # it loads a module (make_patchnum.pl -> git_version.h). Native
+                # dodges this because there miniperl and target share one compiler,
+                # so -Accflags covers both; the Linux crosses dodge it because the
+                # miscompile is darwin-specific. Feed the same flags via HOSTCFLAGS.
+                + sp.lib.optionalString (crossCompiling && isDarwin) ''
+                  export HOSTCFLAGS="-fno-strict-aliasing -fwrapv"
+                ''
                 + zipConfigOver;
               postConfigure = (old.postConfigure or "")
                 + sp.lib.optionalString crossCompiling zipConfigCross;
@@ -486,24 +501,7 @@
                 rm -f "$1.ll"
               }
 
-              ${sp.lib.optionalString crossCompiling ''
-                # perl-cross's version-stamp rule
-                #   git_version.h lib/Config_git.pl: make_patchnum.pl | miniperl
-                # keeps re-firing on the darwin cross: the splitting below runs
-                # several makes, and each re-sees the stamp as stale (coarse FS
-                # mtime; `| miniperl` is order-only so it isn't the trigger — the
-                # only real prerequisite is make_patchnum.pl). When it re-fires
-                # DURING the parallel `nonxs_ext` phase that copies ../../lib/*.pm
-                # (miniperl's @INC), miniperl loads a half-written module and
-                # segfaults. Generate the stamp once, up front (race-free, before
-                # any extensions), then freeze its lone prerequisite in the past so
-                # the stamp is never seen as stale again and the rule never re-fires.
-                # Not the engine (miniperl is plain-native) nor HOSTCC (cc==gcc==
-                # clang). Cross only: native uses perl's own Configure/Makefile.
-                make $J miniperl
-                make git_version.h lib/Config_git.pl
-                touch -t 200001010000 make_patchnum.pl
-              ''}make $J libperl.a
+              make $J libperl.a
               # Rewrite every bitcode member of libperl.a (any native member passes
               # through untouched), then repack with the bitcode-aware llvm ar so
               # the LTO link resolves the members from the archive index.
