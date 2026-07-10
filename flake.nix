@@ -486,7 +486,21 @@
                 rm -f "$1.ll"
               }
 
-              make $J libperl.a
+              ${sp.lib.optionalString crossCompiling ''
+                # perl-cross's version-stamp rule is multi-target:
+                #   git_version.h lib/Config_git.pl: make_patchnum.pl | miniperl
+                # Under `make -j` that recipe can fire concurrently (once per
+                # target) — and because splitting the build below recreates
+                # libperl.a mid-way, the stamp regenerates LATE, colliding with the
+                # extension phase that copies ../../lib/*.pm (miniperl's @INC).
+                # miniperl then loads a half-written module and segfaults (surfaces
+                # on the darwin cross; a latent race everywhere). Build miniperl and
+                # both stamp targets once, serially, up front so the rule is already
+                # satisfied and never fires under the parallel makes below. Cross
+                # only: the native build uses perl's own Configure/Makefile.
+                make $J miniperl
+                make git_version.h lib/Config_git.pl
+              ''}make $J libperl.a
               # Rewrite every bitcode member of libperl.a (any native member passes
               # through untouched), then repack with the bitcode-aware llvm ar so
               # the LTO link resolves the members from the archive index.
