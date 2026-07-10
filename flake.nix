@@ -487,19 +487,22 @@
               }
 
               ${sp.lib.optionalString crossCompiling ''
-                # perl-cross's version-stamp rule is multi-target:
+                # perl-cross's version-stamp rule
                 #   git_version.h lib/Config_git.pl: make_patchnum.pl | miniperl
-                # Under `make -j` that recipe can fire concurrently (once per
-                # target) — and because splitting the build below recreates
-                # libperl.a mid-way, the stamp regenerates LATE, colliding with the
-                # extension phase that copies ../../lib/*.pm (miniperl's @INC).
-                # miniperl then loads a half-written module and segfaults (surfaces
-                # on the darwin cross; a latent race everywhere). Build miniperl and
-                # both stamp targets once, serially, up front so the rule is already
-                # satisfied and never fires under the parallel makes below. Cross
-                # only: the native build uses perl's own Configure/Makefile.
+                # keeps re-firing on the darwin cross: the splitting below runs
+                # several makes, and each re-sees the stamp as stale (coarse FS
+                # mtime; `| miniperl` is order-only so it isn't the trigger — the
+                # only real prerequisite is make_patchnum.pl). When it re-fires
+                # DURING the parallel `nonxs_ext` phase that copies ../../lib/*.pm
+                # (miniperl's @INC), miniperl loads a half-written module and
+                # segfaults. Generate the stamp once, up front (race-free, before
+                # any extensions), then freeze its lone prerequisite in the past so
+                # the stamp is never seen as stale again and the rule never re-fires.
+                # Not the engine (miniperl is plain-native) nor HOSTCC (cc==gcc==
+                # clang). Cross only: native uses perl's own Configure/Makefile.
                 make $J miniperl
                 make git_version.h lib/Config_git.pl
+                touch -t 200001010000 make_patchnum.pl
               ''}make $J libperl.a
               # Rewrite every bitcode member of libperl.a (any native member passes
               # through untouched), then repack with the bitcode-aware llvm ar so
