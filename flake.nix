@@ -209,7 +209,31 @@
           '';
 
           mkPerl = { nixLdflags ? null, buildPhase ? null, extraPostInstall ? "" }:
-            sp.perl.overrideAttrs (old: {
+            sp.perl.overrideAttrs (old:
+            let
+              # nixpkgs' interpreter.nix bakes an absolute `${coreutils}/bin/pwd`
+              # into Cwd.pm on EVERY cross (its crossCompiling postPatch branch);
+              # the native branch uses `$(type -P pwd)` and pulls nothing. The
+              # interpolated store path is an eval-time string-context edge, so it
+              # makes coreutils — and thus gmp — a BUILD INPUT of perl on every
+              # cross. On the darwin (aarch64->x86_64) cross that gmp is built by the
+              # engine, whose ld64.lld rejects gmp's x86_64 hand-asm ("BRANCH
+              # relocation has width 1 bytes, must be 4"), failing the build.
+              # Rewrite the base postPatch to the native `$(type -P pwd)` form
+              # (resolved at build time). replaceStrings drops the text but NOT the
+              # string context, so the coreutils input edge would survive; coreutils
+              # is verified to be the SOLE context element of the cross postPatch
+              # (native postPatch has none), so discard the now-spurious context to
+              # actually cut the edge. The postPatch additions concatenated after
+              # this keep their own context intact. Native path unchanged -> byte-id.
+              crossBasePostPatch =
+                let b = old.postPatch or ""; in
+                if crossCompiling
+                then builtins.unsafeDiscardStringContext (builtins.replaceStrings
+                  [ "'${sp.coreutils}/bin/pwd'" ] [ ''"$(type -P pwd)"'' ] b)
+                else b;
+            in
+            {
               # On a case-insensitive FS (macOS) perl-cross's `configure` clobbers
               # perl's `Configure` during the cross overlay, so nixpkgs'
               # no-sys-dirs.patch (which patches Configure) can't apply. The cross
@@ -265,7 +289,7 @@
               # the value is the string 'false' (truthy in perl) so it runs on the
               # static build and dies (EACCES on the read-only binary; there is no
               # libperl.dylib regardless). Require eq 'true' so it's skipped.
-              postPatch = (old.postPatch or "") + (if isDarwin then ''
+              postPatch = crossBasePostPatch + (if isDarwin then ''
                 substituteInPlace installperl \
                   --replace-fail '&& $Config{useshrplib}' '&& $Config{useshrplib} eq "true"'
               '' else "")
