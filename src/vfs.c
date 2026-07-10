@@ -499,37 +499,62 @@ static int anon_fd(const unsigned char *data, size_t len) {
 #  endif
 #else
 /* Linux: a real anonymous kernel fd. */
-extern int __real_open(const char *path, int flags, ...);
-extern int __real_stat(const char *path, struct stat *st);
-extern int __real_lstat(const char *path, struct stat *st);
-extern int __real_access(const char *path, int mode);
 static int anon_fd(const unsigned char *data, size_t len) {
     int fd = (int)syscall(SYS_memfd_create, "unpinvfs", 0u);
     if (fd < 0) return -1;
     if (write_all(fd, data, len) < 0) { close(fd); return -1; }
     return fd;
 }
-#  define OPEN_FN    __wrap_open
-#  define STAT_FN    __wrap_stat
-#  define LSTAT_FN   __wrap_lstat
-#  define ACCESS_FN  __wrap_access
-#  define REAL_OPEN(p, ...)   __real_open((p), __VA_ARGS__)
-#  define REAL_STAT(p, s)     __real_stat((p), (s))
-#  define REAL_LSTAT(p, s)    __real_lstat((p), (s))
-#  define REAL_ACCESS(p, m)   __real_access((p), (m))
-#  ifdef UNPIN_VFS_DIRS
+#  ifdef UNPIN_VFS_NOWRAP
+/* Engine (bitcode): the consumer's open/stat/... IR symbols are rewritten to
+ * unpinvfs_*; this TU is never rewritten, so it NAMES its interceptors
+ * unpinvfs_* and calls the genuine libc directly (no linker --wrap → no
+ * __real_*). The only binding safe to fold into the unpinbox mega. */
+#    define OPEN_FN    unpinvfs_open
+#    define STAT_FN    unpinvfs_stat
+#    define LSTAT_FN   unpinvfs_lstat
+#    define ACCESS_FN  unpinvfs_access
+#    define REAL_OPEN(p, ...)   open((p), __VA_ARGS__)
+#    define REAL_STAT(p, s)     stat((p), (s))
+#    define REAL_LSTAT(p, s)    lstat((p), (s))
+#    define REAL_ACCESS(p, m)   access((p), (m))
+#    ifdef UNPIN_VFS_DIRS
+#      define OPENDIR_FN  unpinvfs_opendir
+#      define READDIR_FN  unpinvfs_readdir
+#      define CLOSEDIR_FN unpinvfs_closedir
+#      define FOPEN_FN    unpinvfs_fopen
+#      define REAL_OPENDIR(p)   opendir((p))
+#      define REAL_READDIR(d)   readdir((d))
+#      define REAL_CLOSEDIR(d)  closedir((d))
+#      define REAL_FOPEN(p, m)  fopen((p), (m))
+#    endif
+#  else
+extern int __real_open(const char *path, int flags, ...);
+extern int __real_stat(const char *path, struct stat *st);
+extern int __real_lstat(const char *path, struct stat *st);
+extern int __real_access(const char *path, int mode);
+#    define OPEN_FN    __wrap_open
+#    define STAT_FN    __wrap_stat
+#    define LSTAT_FN   __wrap_lstat
+#    define ACCESS_FN  __wrap_access
+#    define REAL_OPEN(p, ...)   __real_open((p), __VA_ARGS__)
+#    define REAL_STAT(p, s)     __real_stat((p), (s))
+#    define REAL_LSTAT(p, s)    __real_lstat((p), (s))
+#    define REAL_ACCESS(p, m)   __real_access((p), (m))
+#    ifdef UNPIN_VFS_DIRS
 extern DIR *__real_opendir(const char *path);
 extern struct dirent *__real_readdir(DIR *dirp);
 extern int __real_closedir(DIR *dirp);
 extern FILE *__real_fopen(const char *path, const char *mode);
-#    define OPENDIR_FN  __wrap_opendir
-#    define READDIR_FN  __wrap_readdir
-#    define CLOSEDIR_FN __wrap_closedir
-#    define FOPEN_FN    __wrap_fopen
-#    define REAL_OPENDIR(p)   __real_opendir((p))
-#    define REAL_READDIR(d)   __real_readdir((d))
-#    define REAL_CLOSEDIR(d)  __real_closedir((d))
-#    define REAL_FOPEN(p, m)  __real_fopen((p), (m))
+#      define OPENDIR_FN  __wrap_opendir
+#      define READDIR_FN  __wrap_readdir
+#      define CLOSEDIR_FN __wrap_closedir
+#      define FOPEN_FN    __wrap_fopen
+#      define REAL_OPENDIR(p)   __real_opendir((p))
+#      define REAL_READDIR(d)   __real_readdir((d))
+#      define REAL_CLOSEDIR(d)  __real_closedir((d))
+#      define REAL_FOPEN(p, m)  __real_fopen((p), (m))
+#    endif
 #  endif
 #endif
 
