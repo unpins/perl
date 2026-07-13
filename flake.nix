@@ -475,9 +475,12 @@
 
               # Rewrite one .ll: perl's libc file calls -> the VFS shims. @sym is a
               # FUNCTION symbol (sigil differs from %struct.stat), so @stat never
-              # touches `struct stat`. darwin's SDK emits raw-label imports
-              # (@"\01_stat$INODE64"); 32-bit musl's _REDIR_TIME64 renames
-              # stat->__stat_time64. Rules that don't match a given IR are no-ops.
+              # touches `struct stat`. darwin's SDK emits raw-label imports; the
+              # stat/lstat spelling is ARCH-specific: x86_64 carries the legacy
+              # inode32 ABI so the alias is `_stat$INODE64`, but arm64 was inode64
+              # from day one so it's the PLAIN `_stat` (open/access are plain on
+              # both). 32-bit musl's _REDIR_TIME64 renames stat->__stat_time64.
+              # Rules that don't match a given IR are no-ops.
               vfsSed() {
                 sed -i \
                   -e 's/@open\b/@unpinvfs_open/g' \
@@ -490,6 +493,8 @@
                   -e 's/@"\\01__lstat_time64"/@unpinvfs_lstat/g' \
                   -e 's/@"\\01_open"/@unpinvfs_open/g' \
                   -e 's/@"\\01_access"/@unpinvfs_access/g' \
+                  -e 's/@"\\01_stat"/@unpinvfs_stat/g' \
+                  -e 's/@"\\01_lstat"/@unpinvfs_lstat/g' \
                   -e 's/@"\\01_stat\$INODE64"/@unpinvfs_stat/g' \
                   -e 's/@"\\01_lstat\$INODE64"/@unpinvfs_lstat/g' \
                   "$1"
@@ -572,8 +577,12 @@
       # too large to fold into the unpinbox mega, so it needs no bitcode module.
       engine = "unpin-llvm";
       embedMan = true;
-      smoke = [ "--version" ];
-      smokePattern = "This is perl 5";
+      # `-Mstrict` forces `require strict` -> a /zip @INC module load through the
+      # VFS stat/open shims, the exact path that leaked to libc on arm64-darwin
+      # (vfsSed's missing plain `_stat`/`_lstat`). `--version` never loads a
+      # module, so it left that bug latent; keep the module load in the smoke.
+      smoke = [ "-Mstrict" "-e" "print q{perl VFS smoke ok}" ];
+      smokePattern = "perl VFS smoke ok";
       build = pkgs: (mk pkgs).base;
       # Windows is mingw-NATIVE (not cosmo): nixpkgs' perl-cross cross only goes
       # part-way, so windows.nix runs winfix.sh (postConfigure) to make it a real
