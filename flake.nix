@@ -102,38 +102,16 @@
                 .pkgsStatic.stdenv.cc.libc;
               in [ "-Dlocincpth=${sp.lib.getDev musl}/include" ];
 
-          # The engine's `llvm` multitool (`llvm opt`, `llvm ar`, `llvm readelf`…),
-          # referenced at eval time instead of grepped out of the cc-wrapper at
-          # build time: nix-lib exposes it via unpinToolchain, and one build-host
-          # toolchain cross-emits every Linux target (so buildPlatform, not host).
-          # The old runtime grep found it inside the NATIVE cc-wrapper but not the
-          # cross one, which lays the path out differently.
-          engineMultitool =
-            "${ulib.unpinToolchain sp.stdenv.buildPlatform.system}/bin/llvm";
-
-          # perl-cross determines target facts WITHOUT running code by introspecting
-          # compiled objects: `readelf --syms` for type sizes, `objdump -s` on .data
-          # for byte order. Under the engine those objects are LTO bitcode, which
-          # llvm-readelf/objdump reject ("bitcode files are not supported"). This
-          # wrapper lowers a bitcode argument to a native ELF object for the target
-          # triple embedded in the module (clang -x ir, no -flto) before handing it
-          # to the real tool; ELF arguments pass straight through. $1 = subtool; the
-          # object is always perl-cross's last argument. Build-host tool, cross only.
-          bcIntrospect = sp.buildPackages.writeShellScript "unpin-perl-cross-bc-introspect" ''
-            mt=${engineMultitool}
-            tool=$1; shift
-            n=$#
-            obj=''${!n}
-            if [ -f "$obj" ] && [ "$(od -An -tx1 -N4 "$obj" 2>/dev/null | tr -d ' \n')" = 4243c0de ]; then
-              triple=$("$mt" opt -S "$obj" -o - 2>/dev/null \
-                | sed -n 's/^target triple = "\(.*\)"/\1/p' | head -1)
-              low=$(mktemp -d)/lowered.o
-              if [ -n "$triple" ] && "$mt" clang -target "$triple" -fno-lto -x ir -c "$obj" -o "$low" 2>/dev/null; then
-                set -- "''${@:1:$((n - 1))}" "$low"
-              fi
-            fi
-            exec "$mt" "$tool" "$@"
-          '';
+          # Shared engine-perl plumbing (nix-lib): the `llvm` multitool
+          # (referenced at eval time via unpinToolchain — one build-host toolchain
+          # cross-emits every target, so buildPlatform not host), the bitcode-
+          # lowering introspection helper perl-cross's readelf/objdump probes need,
+          # and the VFS IR-rewrite shell fns (vfsSed & co). All of it lives in
+          # nix-lib so the fix-prone vfsSed has ONE home shared with unpins/biber.
+          ep = ulib.enginePerl {
+            inherit pkgs;
+            introspectName = "unpin-perl-cross-bc-introspect";
+          };
 
           # runtime @INC (*exp) -> /zip/share/perl5 ; install dest -> share/perl5
           zipConfigOver = ''
@@ -337,8 +315,8 @@
               # cross_darwin.pl above; native/i686 use perl's own Configure).
               preConfigure = (old.preConfigure or "")
                 + sp.lib.optionalString (crossCompiling && !isDarwin) ''
-                  export READELF="${bcIntrospect} readelf"
-                  export OBJDUMP="${bcIntrospect} objdump"
+                  export READELF="${ep.bcIntrospect} readelf"
+                  export OBJDUMP="${ep.bcIntrospect} objdump"
                 ''
                 # The -Accflags=-fno-strict-aliasing above reaches only the TARGET
                 # perl's ccflags. perl-cross builds the build-time miniperl in a
@@ -468,43 +446,11 @@
               # The engine LLVM multitool (`llvm opt`, `llvm ar`), referenced at
               # eval time (nix-lib unpinToolchain) so it resolves identically on the
               # native and the cross builds.
-              MT=${engineMultitool}
+              MT=${ep.multitool}
 
-              # bitcode magic: raw 4243c0de (linux) / darwin-wrapped dec0170b.
-              isbc() { case "$(od -An -tx1 -N4 "$1" 2>/dev/null | tr -d ' \n')" in 4243c0de|dec0170b) return 0;; *) return 1;; esac; }
-
-              # Rewrite one .ll: perl's libc file calls -> the VFS shims. @sym is a
-              # FUNCTION symbol (sigil differs from %struct.stat), so @stat never
-              # touches `struct stat`. darwin's SDK emits raw-label imports; the
-              # stat/lstat spelling is ARCH-specific: x86_64 carries the legacy
-              # inode32 ABI so the alias is `_stat$INODE64`, but arm64 was inode64
-              # from day one so it's the PLAIN `_stat` (open/access are plain on
-              # both). 32-bit musl's _REDIR_TIME64 renames stat->__stat_time64.
-              # Rules that don't match a given IR are no-ops.
-              vfsSed() {
-                sed -i \
-                  -e 's/@open\b/@unpinvfs_open/g' \
-                  -e 's/@stat\b/@unpinvfs_stat/g' \
-                  -e 's/@lstat\b/@unpinvfs_lstat/g' \
-                  -e 's/@access\b/@unpinvfs_access/g' \
-                  -e 's/@__stat_time64\b/@unpinvfs_stat/g' \
-                  -e 's/@__lstat_time64\b/@unpinvfs_lstat/g' \
-                  -e 's/@"\\01__stat_time64"/@unpinvfs_stat/g' \
-                  -e 's/@"\\01__lstat_time64"/@unpinvfs_lstat/g' \
-                  -e 's/@"\\01_open"/@unpinvfs_open/g' \
-                  -e 's/@"\\01_access"/@unpinvfs_access/g' \
-                  -e 's/@"\\01_stat"/@unpinvfs_stat/g' \
-                  -e 's/@"\\01_lstat"/@unpinvfs_lstat/g' \
-                  -e 's/@"\\01_stat\$INODE64"/@unpinvfs_stat/g' \
-                  -e 's/@"\\01_lstat\$INODE64"/@unpinvfs_lstat/g' \
-                  "$1"
-              }
-              bcrewrite() {  # $1 = bitcode object, rewritten in place
-                $MT opt -S "$1" -o "$1.ll"
-                vfsSed "$1.ll"
-                $MT opt "$1.ll" -o "$1"
-                rm -f "$1.ll"
-              }
+              # isbc + vfsSed + bcrewrite (the IR VFS-rewrite core, incl. the
+              # arch-specific darwin stat/lstat rules) — shared from nix-lib.
+              ${ep.vfsShellFns}
 
               make $J libperl.a
               # Rewrite every bitcode member of libperl.a (any native member passes
