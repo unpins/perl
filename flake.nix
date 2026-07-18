@@ -133,7 +133,7 @@
               local t; t=$($MT opt -S "$1" -o - 2>/dev/null \
                 | sed -n 's/^target triple = "\(.*\)"/\1/p' | head -1)
               [ -n "$t" ] || return 0
-              $MT clang -target "$t" -O2 -fno-lto -x ir -c "$1" -o "$1.n" && mv "$1.n" "$1"
+              $MT clang -target "$t" -O0 -fno-lto -x ir -c "$1" -o "$1.n" && mv "$1.n" "$1"
             }
           '';
 
@@ -508,7 +508,15 @@
               make $J perl
               runHook postBuild
             '';
-            extraPostInstall = dropAndAlias;
+            extraPostInstall = dropAndAlias + sp.lib.optionalString isDarwin ''
+              # diag(split): stash the generated config so the cross (arm64-host
+              # perl-cross) output can be diffed against the x86_64-native Configure
+              # output (isolates a config/table host-taint from a pure codegen bug).
+              # Dumped on BOTH darwin builds so the native run gives the baseline.
+              # Remove with the diag branch.
+              mkdir -p "$out/share/perl-diag"
+              cp config.sh config.h "$out/share/perl-diag/" 2>/dev/null || true
+            '';
           };
 
           # The @INC tree + applet scripts are embedded; ship none on disk. Drop
