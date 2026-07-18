@@ -516,6 +516,15 @@
               # Remove with the diag branch.
               mkdir -p "$out/share/perl-diag"
               cp config.sh config.h "$out/share/perl-diag/" 2>/dev/null || true
+              # Echo ABI-critical config into the build log (grep DIAGCFG:) so the
+              # cross (arm64-host) values can be diffed against the native x86_64
+              # ones without unpacking the dict-compressed VFS.
+              for __v in ptrsize ivsize uvsize nvsize longsize longlongsize sizesize \
+                         alignbytes doublesize longdblsize d_longdbl ivtype nvtype \
+                         use64bitint use64bitall usemultiplicity useithreads \
+                         intsize shortsize byteorder charsize; do
+                echo "DIAGCFG:$(grep "^$__v=" config.sh || echo "$__v=?")"
+              done
             '';
           };
 
