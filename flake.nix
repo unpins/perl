@@ -113,6 +113,28 @@
             introspectName = "unpin-perl-cross-bc-introspect";
           };
 
+          # darwin-x86_64 is the aarch64-darwin -> x86_64 cross. The engine's
+          # whole-program LTO codegen miscompiles perl's SV/magic engine in THIS
+          # cross only (native x86_64 and the i686 cross run `use warnings` fine):
+          # the shipped binary panics `magic_killbackrefs` the instant a module
+          # pulls weak refs (any `use warnings`). It's the LTO link-time codegen,
+          # not the per-TU aliasing bug -Accflags=-fno-strict-aliasing already
+          # cures (that fix is kept) -- the same clang-21 class as ffmpeg/sox.
+          # Compile perl engine-clang but WITHOUT -flto here; libperl's objects
+          # link as ordinary Mach-O into the still-static binary. Native/linux
+          # keep LTO (this branch is untaken there -> byte-id).
+          perlStdenv =
+            if crossCompiling && isDarwin
+            then ulib.unpinAdapterStdenv {
+              inherit pkgs;
+              target = host.config;
+              native = false;
+              cxx = true;
+              lto = false;
+              captureLinks = true;
+            }
+            else sp.stdenv;
+
           # runtime @INC (*exp) -> /zip/share/perl5 ; install dest -> share/perl5
           zipConfigOver = ''
 
@@ -187,7 +209,7 @@
           '';
 
           mkPerl = { nixLdflags ? null, buildPhase ? null, extraPostInstall ? "" }:
-            sp.perl.overrideAttrs (old:
+            (sp.perl.override { stdenv = perlStdenv; }).overrideAttrs (old:
             let
               # nixpkgs' interpreter.nix bakes an absolute `${coreutils}/bin/pwd`
               # into Cwd.pm on EVERY cross (its crossCompiling postPatch branch);
