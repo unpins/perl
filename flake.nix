@@ -114,26 +114,28 @@
           };
 
           # darwin-x86_64 is the aarch64-darwin -> x86_64 cross. The engine's
-          # whole-program LTO codegen miscompiles perl's SV/magic engine in THIS
-          # cross only (native x86_64 and the i686 cross run `use warnings` fine):
-          # the shipped binary panics `magic_killbackrefs` the instant a module
-          # pulls weak refs (any `use warnings`). It's the LTO link-time codegen,
-          # not the per-TU aliasing bug -Accflags=-fno-strict-aliasing already
-          # cures (that fix is kept) -- the same clang-21 class as ffmpeg/sox.
-          # Compile perl engine-clang but WITHOUT -flto here; libperl's objects
-          # link as ordinary Mach-O into the still-static binary. Native/linux
-          # keep LTO (this branch is untaken there -> byte-id).
-          perlStdenv =
-            if crossCompiling && isDarwin
-            then ulib.unpinAdapterStdenv {
-              inherit pkgs;
-              target = host.config;
-              native = false;
-              cxx = true;
-              lto = false;
-              captureLinks = true;
+          # whole-program LTO link codegen miscompiles perl's SV/magic engine in
+          # THIS cross only (native x86_64 and the i686 cross run `use warnings`
+          # fine): the shipped binary panics `magic_killbackrefs` the instant a
+          # module pulls weak refs (any `use warnings`). -Accflags=-fno-strict-
+          # aliasing doesn't cure it (kept anyway) -- it is the LTO LINK codegen.
+          # We can't just drop -flto (the VFS binds by rewriting perl's IR, which
+          # needs bitcode objects). So keep -flto for COMPILE (bitcode -> vfsSed
+          # works), then codegen each rewritten object to native per-TU with
+          # `clang -O2 -fno-lto` BEFORE the final link, so the link pulls ordinary
+          # objects and does no whole-program LTO. Isolation: if this fixes the
+          # panic it WAS the LTO link codegen; if it still panics it's the per-TU
+          # cross backend. Gated to the darwin cross; native/linux untouched.
+          delto = crossCompiling && isDarwin;
+          delToFns = sp.lib.optionalString delto ''
+            # bitcode object -> native, per-TU, engine clang, no whole-program LTO.
+            codegen_native() {
+              local t; t=$($MT opt -S "$1" -o - 2>/dev/null \
+                | sed -n 's/^target triple = "\(.*\)"/\1/p' | head -1)
+              [ -n "$t" ] || return 0
+              $MT clang -target "$t" -O2 -fno-lto -x ir -c "$1" -o "$1.n" && mv "$1.n" "$1"
             }
-            else sp.stdenv;
+          '';
 
           # runtime @INC (*exp) -> /zip/share/perl5 ; install dest -> share/perl5
           zipConfigOver = ''
@@ -209,7 +211,7 @@
           '';
 
           mkPerl = { nixLdflags ? null, buildPhase ? null, extraPostInstall ? "" }:
-            (sp.perl.override { stdenv = perlStdenv; }).overrideAttrs (old:
+            sp.perl.overrideAttrs (old:
             let
               # nixpkgs' interpreter.nix bakes an absolute `${coreutils}/bin/pwd`
               # into Cwd.pm on EVERY cross (its crossCompiling postPatch branch);
@@ -473,6 +475,7 @@
               # isbc + vfsSed + bcrewrite (the IR VFS-rewrite core, incl. the
               # arch-specific darwin stat/lstat rules) — shared from nix-lib.
               ${ep.vfsShellFns}
+              ${delToFns}
 
               make $J libperl.a
               # Rewrite every bitcode member of libperl.a (any native member passes
@@ -483,6 +486,7 @@
               for o in .vfsm/*; do
                 [ -f "$o" ] || continue
                 isbc "$o" && bcrewrite "$o"
+                ${sp.lib.optionalString delto ''isbc "$o" && codegen_native "$o"''}
               done
               rm -f libperl.a && $MT ar rcs libperl.a .vfsm/*
 
@@ -499,6 +503,7 @@
                 $MT opt perlmain.ll -o perlmain.o
                 rm -f perlmain.ll
               fi
+              ${sp.lib.optionalString delto ''isbc perlmain.o && codegen_native perlmain.o''}
               export NIX_LDFLAGS="$NIX_LDFLAGS ${dispatchObj}/dispatch.o"
               make $J perl
               runHook postBuild
