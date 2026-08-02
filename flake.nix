@@ -37,10 +37,10 @@
   # binary (cpan, json_pp, shasum, prove, pod2*, ptar*, …) are embedded as
   # `/zip/bin/<name>` scripts and dispatched by argv[0] — `main` is intercepted
   # (perlmain's `main` is IR-renamed to `real_main`; dispatch.o supplies `main`)
-  # so invoking the binary as `json_pp` runs the embedded script. `withAliases` harvests the names so
-  # `unpin install perl` creates the command links. Excluded: XS-codegen/dev
-  # tools (xsubpp/h2xs/enc2xs/…), perlbug/libnetcfg, perlivp, and the tools that
-  # need a `.pod` we drop for size (perldoc, splain).
+  # so invoking the binary as `json_pp` runs the embedded script. The shipping
+  # embed harvests the names so `unpin install perl` creates the command links.
+  # Excluded: XS-codegen/dev tools (xsubpp/h2xs/enc2xs/…), perlbug/libnetcfg,
+  # perlivp, and the tools that need a `.pod` we drop for size (perldoc, splain).
   #
   # This is a single-static binary: it is `-Uusedl` (no DynaLoader), so XS
   # modules cannot be loaded. Pure-Perl modules install fine — `sitecustomize.pl`
@@ -486,8 +486,8 @@
 
           # The @INC tree + applet scripts are embedded; ship none on disk. Drop
           # the /nix-shebanged standalone scripts and expose the applets as
-          # symlinks to perl (dispatch.o keys on argv[0]); withAliases harvests
-          # them into UNPIN_META.
+          # symlinks to perl (dispatch.o keys on argv[0]); the shipping embed
+          # harvests them into the alias list.
           dropAndAlias = ''
             rm -rf "$out/share/perl5"
             find "$out/bin" -maxdepth 1 -type f ! -name 'perl' ! -name 'perl5.*' -delete
