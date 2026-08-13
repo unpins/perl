@@ -393,7 +393,7 @@
             name = "perl-vfs-o";
             dontUnpack = true;
             buildPhase = ''
-              cp ${./src}/*.c ${./src}/*.h .
+              cp ${ulib.vfsCore}/*.c ${ulib.vfsCore}/*.h .
               # -DUNPIN_VFS_NOWRAP: define the shims as unpinvfs_open/stat/lstat/
               # access (not __wrap_*). Under the engine every object is bitcode, so
               # the VFS is bound by IR-renaming perl's open/stat/... references to
