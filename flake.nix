@@ -225,7 +225,13 @@
                   (p: !(sp.lib.hasInfix "no-sys-dirs" (toString p))) base
                 else base
               ) ++ perlPatches;
-              configureFlags = (old.configureFlags or [ ]) ++ [ "-Dusesitecustomize" ]
+              configureFlags = (if crossCompiling
+                # perl-cross keeps ONE value per -A<var>= (a second -Accflags=
+                # replaces the first, where perl's Configure appends), so on a cross
+                # every -Accflags= is folded into a single argument in preConfigure.
+                then builtins.filter (f: !sp.lib.hasPrefix "-Accflags=" f) (old.configureFlags or [ ])
+                else old.configureFlags or [ ])
+                ++ [ "-Dusesitecustomize" ]
                 # perl's native Configure scans $libpth for the libc archive to
                 # nm-extract symbols from; nixpkgs derives that dir from
                 # stdenv.cc.libc, which is null under the unpin-llvm engine (musl
@@ -251,15 +257,24 @@
                 # stdenv.cc.libc (null under the engine). Linux native only; darwin
                 # detects against its SDK, the cross builds use perl-cross.
                 ++ engineIncFix
+                # 32-bit targets (i686, armv7l): perl's Configure and perl-cross both
+                # default to 32-bit integers, so an integer past 2^31 wraps
+                # (`printf "%d", 3000000000` prints -1294967296; biber drops dates
+                # whose epoch seconds pass it). Use 64-bit integers so every target
+                # computes alike.
+                ++ sp.lib.optional host.is32bit "-Duse64bitint"
+                ++ sp.lib.optionals isDarwin [
+                  "-Dranlib=${prefix}ranlib"
+                ]
                 # perl leans hard on type-punning through its SV/magic unions, so it
                 # MUST compile with -fno-strict-aliasing (and -fwrapv for its signed-
                 # overflow assumptions). On Linux perl's Configure injects these from
                 # gccversion; under the engine on darwin that detection misfires and
                 # the darwin hints force a bare -O3, so miniperl miscompiles and dies
                 # `panic: magic_killbackrefs` the moment it loads a module with weak
-                # refs (warnings.pm). Append them explicitly for the darwin engine.
-                ++ sp.lib.optionals isDarwin [
-                  "-Dranlib=${prefix}ranlib"
+                # refs (warnings.pm). Native darwin passes them here; the crosses
+                # (perl-cross never adds them) get them in preConfigure below.
+                ++ sp.lib.optionals (isDarwin && !crossCompiling) [
                   "-Accflags=-fno-strict-aliasing"
                   "-Accflags=-fwrapv"
                 ];
@@ -306,31 +321,35 @@
                   'sub get_files {' \
                   'sub get_files { if (open(my $s, ">", "unpin_errno.c")) { print $s "#include <errno.h>\n"; close $s; return ("unpin_errno.c"); }'
               '';
-              # perl-cross's configure probes the ELF build host for readelf/objdump,
-              # but the engine toolchain ships only the `llvm` multitool (no prefixed
-              # readelf/objdump), so the probe dies ("Cannot find readelf"). Point
-              # perl-cross's READELF/OBJDUMP env knobs at `llvm readelf`/`llvm objdump`
-              # (GNU-compatible), locating the multitool the same way build-B does.
-              # Linux cross only (the darwin cross rewrites these probes via
-              # cross_darwin.pl above; native/i686 use perl's own Configure).
               preConfigure = (old.preConfigure or "")
+                # perl-cross never adds -fno-strict-aliasing -fwrapv on its own, and
+                # without them every cross perl dies on its first module (armv7l
+                # "panic: magic_killbackrefs", riscv64/ppc64le SIGSEGV). Pass them
+                # with nixpkgs' own -Accflags as ONE argument: configureFlags would
+                # split it on the spaces, configureFlagsArray keeps it whole.
+                + sp.lib.optionalString crossCompiling ''
+                  configureFlagsArray+=("-Accflags=${sp.lib.concatStringsSep " " ((map (sp.lib.removePrefix "-Accflags=") (builtins.filter (f: sp.lib.hasPrefix "-Accflags=" f) (old.configureFlags or [ ]))) ++ [ "-fno-strict-aliasing" "-fwrapv" ])}")
+                ''
+                # perl-cross's configure probes the ELF build host for readelf/objdump,
+                # but the engine toolchain ships only the `llvm` multitool (no prefixed
+                # readelf/objdump), so the probe dies ("Cannot find readelf"). Point
+                # perl-cross's READELF/OBJDUMP env knobs at `llvm readelf`/`llvm objdump`
+                # (GNU-compatible), locating the multitool the same way build-B does.
+                # Linux cross only (the darwin cross rewrites these probes via
+                # cross_darwin.pl above; native/i686 use perl's own Configure).
                 + sp.lib.optionalString (crossCompiling && !isDarwin) ''
                   export READELF="${ep.bcIntrospect} readelf"
                   export OBJDUMP="${ep.bcIntrospect} objdump"
                 ''
-                # The -Accflags=-fno-strict-aliasing above reaches only the TARGET
-                # perl's ccflags. perl-cross builds the build-time miniperl in a
-                # separate `configure --mode=buildmini` respawn that inherits neither
-                # -Accflags nor CFLAGS -- it takes its ccflags from $HOSTCFLAGS
-                # (empty by default). So on the darwin cross the miniperl compiles
-                # under the engine clang WITHOUT -fno-strict-aliasing: the same
-                # SV/magic strict-aliasing miscompile that -Accflags cures for the
-                # target hits miniperl instead, and it segfaults intermittently once
-                # it loads a module (make_patchnum.pl -> git_version.h). Native
-                # dodges this because there miniperl and target share one compiler,
-                # so -Accflags covers both; the Linux crosses dodge it because the
-                # miscompile is darwin-specific. Feed the same flags via HOSTCFLAGS.
-                + sp.lib.optionalString (crossCompiling && isDarwin) ''
+                # -Accflags reaches only the TARGET perl's ccflags. perl-cross builds
+                # the build-time miniperl in a separate `configure --mode=buildmini`
+                # respawn that inherits neither -Accflags nor CFLAGS -- it takes its
+                # ccflags from $HOSTCFLAGS (empty by default), so that miniperl would
+                # hit the same strict-aliasing miscompile and segfault once it loads a
+                # module (make_patchnum.pl -> git_version.h). Native builds dodge it
+                # because miniperl and target share one configure. Feed the same
+                # flags via HOSTCFLAGS on every cross.
+                + sp.lib.optionalString crossCompiling ''
                   export HOSTCFLAGS="-fno-strict-aliasing -fwrapv"
                 ''
                 + zipConfigOver;

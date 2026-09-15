@@ -51,5 +51,11 @@ The [Releases](https://github.com/unpins/perl/releases) page has standalone bina
 
 ## Build notes
 
-- **One file, no data archive.** The module tree is a ZIP appended to the executable, and `@INC` is served from it by intercepting `open`/`stat` at the linker level (Linux/Windows `-Wl,--wrap`, macOS `llvm-objcopy --redefine-sym`) — no perl source patch.
-- **No XS modules** (`-Uusedl`, inherent to a static binary). Pure-Perl modules still install: `cpan` writes to a per-user cache prepended to `@INC`, never the read-only binary.
+- **One file.** The interpreter and the whole standard library, compiled modules
+  such as `POSIX`, `Storable` and `Encode` included, live inside the binary, so
+  perl needs no installation and no module directory.
+- **Adding modules.** `cpan` and `make install` put modules in a per-user cache
+  that perl searches first: `~/.cache/unpin/perl5` (or under `$XDG_CACHE_HOME`)
+  on Linux and macOS, `%LOCALAPPDATA%\unpin\perl5` on Windows.
+  This works for pure-Perl modules. Modules with C code cannot be added: the
+  binary cannot load compiled extensions.
