@@ -28,7 +28,7 @@ cpan Some::Module
 
 ## Man pages
 
-The language reference and the bundled tools are embedded — read them with `unpin man perl` or `unpin man perlfunc`.
+The language reference and the bundled tools are embedded — read them with `unpin man perl` or `unpin man perl perlfunc`.
 
 ## Build locally
 
