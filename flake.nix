@@ -199,16 +199,21 @@
               # relocation has width 1 bytes, must be 4"), failing the build.
               # Rewrite the base postPatch to the native `$(type -P pwd)` form
               # (resolved at build time). replaceStrings drops the text but NOT the
-              # string context, so the coreutils input edge would survive; coreutils
-              # is verified to be the SOLE context element of the cross postPatch
-              # (native postPatch has none), so discard the now-spurious context to
-              # actually cut the edge. The postPatch additions concatenated after
-              # this keep their own context intact. Native path unchanged -> byte-id.
+              # string context, so the coreutils input edge would survive; remove
+              # coreutils from the context to actually cut it. Only coreutils: the
+              # same postPatch unpacks the vendored CPAN tarballs nixpkgs pins for
+              # CVEs (HTTP-Tiny, Compress-Raw-Zlib, …), and discarding the whole
+              # context left the build opening store paths it never fetched. The
+              # postPatch additions concatenated after this keep their own context.
+              # Native path unchanged -> byte-id.
               crossBasePostPatch =
                 let b = old.postPatch or ""; in
                 if crossCompiling
-                then builtins.unsafeDiscardStringContext (builtins.replaceStrings
-                  [ "'${sp.coreutils}/bin/pwd'" ] [ ''"$(type -P pwd)"'' ] b)
+                then builtins.appendContext
+                  (builtins.unsafeDiscardStringContext (builtins.replaceStrings
+                    [ "'${sp.coreutils}/bin/pwd'" ] [ ''"$(type -P pwd)"'' ] b))
+                  (sp.lib.filterAttrs (k: _: !(sp.lib.hasInfix "-coreutils-" k))
+                    (builtins.getContext b))
                 else b;
             in
             {
