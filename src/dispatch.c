@@ -14,8 +14,9 @@
  *                  bitcode symtab) can bind the entry. perlmain's `@main` is
  *                  renamed to `@real_main` in the IR instead, and this object
  *                  supplies plain `main`. One path for both platforms.
- *   Off-engine Windows (mingw): -Wl,--wrap=main routes the crt's main() to
- *                  __wrap_main; __real_main is perl's own generated main.
+ * Windows has a dispatcher of its own (src/win/dispatch_win.c): its CRT calls
+ * main() from a native object, so there the dispatcher takes the `main` name and
+ * perlmain's becomes __real_main.
  *
  * Curated list (16): the pure-Perl end-user utilities that run cleanly in a
  * single static -Uusedl binary. XS-codegen/dev tools (xsubpp, h2xs, enc2xs,
@@ -64,7 +65,7 @@ int main(int argc, char **argv, char **envp) {
     return unpin_dispatch(argc, argv, envp, real_main);
 }
 #else
-/* Off-engine Windows (mingw): -Wl,--wrap=main. */
+/* Off-engine: -Wl,--wrap=main, for a toolchain that links real objects. */
 extern int __real_main(int argc, char **argv, char **envp);
 int __wrap_main(int argc, char **argv, char **envp) {
     return unpin_dispatch(argc, argv, envp, __real_main);

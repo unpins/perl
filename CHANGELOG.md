@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The Windows binary is now built by the same compiler as the Linux and macOS
+  ones. It is about 27% smaller (18.9 MB to 13.9 MB); `perl -v`, loading
+  modules written in Perl and in C (JSON::PP, Digest::SHA, POSIX, Encode,
+  Storable), reading and writing real files, the embedded library under `/zip`,
+  and the bundled tools `json_pp`, `shasum`, `prove`, `corelist` and `ptar`
+  were checked under Wine.
+
+  It now uses the Universal C Runtime, which is part of Windows 10 and later.
+  On Windows 7 or 8.1 that runtime has to be installed first — it comes through
+  Windows Update. The previous binary did not need it.
+
 ### Fixed
 
 - On 32-bit Linux (i686 and armv7l), perl used 32-bit integers, so integers

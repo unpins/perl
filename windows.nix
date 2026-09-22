@@ -1,16 +1,19 @@
 # Windows (mingw-NATIVE) standalone perl: the same single-binary embedded-@INC
 # design as Linux/darwin, but cross-compiled to x86_64-w64-mingw32. Windows has
 # no memfd, so the VFS materialises each /zip ZIP entry to a temp file and
-# delegates to perl's real win32_{open,stat,lstat,access} (intercepted with mingw
-# `ld --wrap`). The interpreter is a real win32-native perl: nixpkgs' perl-cross
-# cross only goes part-way, so `winfix.sh` (postConfigure) overlays the win32
-# OS/ABI config and wires the win32 host layer (win32/*.c) into libperl.
+# delegates to perl's real win32_{open,stat,lstat,access}, intercepted the same
+# way the native build does it: by renaming those references in the LLVM IR, the
+# engine's stand-in for `ld --wrap`. The interpreter is a real win32-native perl:
+# nixpkgs' perl-cross cross only goes part-way, so `winfix.sh` (postConfigure)
+# overlays the win32 OS/ABI config and wires the win32 host layer (win32/*.c)
+# into libperl.
 #
 # Pipeline mirrors the native `mk`: A (treePerl) installs lib/perl5 with @INC
 # pinned to /zip and Config scrubbed of /nix; B (vfsPerl) relinks the same perl
-# with the four win32 wraps + main wrap (self-EOF VFS, no blob object), dropping
-# lib/perl5 on disk; withUnpinEmbed stages that tree + the applet scripts +
-# sitecustomize.pl and packs perl.exe's single EOF ZIP (aliases + man included).
+# with the four win32 interceptions + the dispatcher's main (self-EOF VFS, no
+# blob object), dropping lib/perl5 on disk; withUnpinEmbed stages that tree + the
+# applet scripts + sitecustomize.pl and packs perl.exe's single EOF ZIP (aliases
+# and man included).
 { ulib, applets, appletsCsv }:
 pkgs:
 let
@@ -23,6 +26,14 @@ let
   # static mcfgthreads (.a) — winfix points ldflags at this dir; the .exe folds
   # libmcfgthread instead of importing the DLL.
   mcfA = "${cross.windows.mcfgthreads}/lib";
+
+  # perl-cross probes its target objects with readelf/objdump, which the
+  # engine ships only as the `llvm` multitool, and the objects are bitcode.
+  ep = ulib.enginePerl {
+    inherit pkgs;
+    sp = cross;
+    introspectName = "unpin-perl-win-bc-introspect";
+  };
 
   # ---- the win32-native perl base: drop the cross coreutils-mingw postPatch
   # (bakes a broken ${coreutils}/bin/pwd into Cwd.pm), apply the inc-macro VFS
@@ -38,6 +49,10 @@ let
       # dragged the failing coreutils-mingw build).
       postPatch = ''
         substituteInPlace cnf/configure_tool.sh --replace-fail "cc -E -P" "cc -E"
+      '';
+      preConfigure = (old.preConfigure or "") + ''
+        export READELF="${ep.bcIntrospect} readelf"
+        export OBJDUMP="${ep.bcIntrospect} objdump"
       '';
       postConfigure = (old.postConfigure or "") + ''
         echo "=== unpin winfix (win32-native + /zip @INC) ==="
@@ -102,17 +117,27 @@ let
   dispatchObj = cross.stdenv.mkDerivation {
     name = "perl-dispatch-win-o";
     dontUnpack = true;
-    buildPhase = ''$CC -O2 -std=gnu17 -c ${winSrc}/dispatch_win.c -o dispatch.o'';
+    # -D__wrap_main=main: the CRT's `main` reference is in a native object no IR
+    # rewrite reaches, so the dispatcher takes the name and perlmain's own main
+    # becomes __real_main in the IR (see the relink below).
+    buildPhase = ''$CC -O2 -std=gnu17 -D__wrap_main=main -c ${winSrc}/dispatch_win.c -o dispatch.o'';
     installPhase = ''mkdir -p $out; cp dispatch.o $out/'';
   };
 
   # ---- B: embedded build. A normal `make` first (so XS link-lib probes and
   # ext.libs are generated cleanly — injecting our objects via NIX_LDFLAGS would
-  # corrupt those probes and drop -lz/-lm). Then relink ONLY perl.exe with the
-  # four win32 wraps + main wrap + our objects (vfs.o + miniz.o, self-EOF — no
-  # blob object), reusing the exact link the perl$x rule would run (captured
-  # with `make -n perl`, so LDFLAGS/LIBS/static.list/ext.libs all match).
-  # __real_win32_* come from libperl's win32 layer via --wrap. ----
+  # corrupt those probes and drop -lz/-lm). Then relink ONLY perl.exe with our
+  # objects (vfs.o + miniz.o, self-EOF — no blob object), reusing the exact link
+  # the perl$x rule would run (captured with `make -n perl`, so LDFLAGS/LIBS/
+  # static.list/ext.libs all match).
+  #
+  # The four win32_* interceptions used to be `ld --wrap`. Under the engine every
+  # object is bitcode and the multicall module replays this link with `ld.lld -r`,
+  # which carries no --wrap flags, so the same binding is done in the IR: the
+  # object that DEFINES a wrapped name renames it (and its own calls) to
+  # __real_*, every other object points at __wrap_* — exactly what --wrap does,
+  # since it never redirects a reference inside the defining object. vfs.c keeps
+  # both spellings, so the shims are unchanged.
   vfsPerl = (mkWinPerl {
     extraPostInstall = dropAndAlias;
     buildPhase = ''
@@ -122,9 +147,55 @@ let
       rm -f perl perl.exe
       relink=$(make -n perl | grep -E -- '-o perl ' | tail -1)
       test -n "$relink" || { echo "could not capture perl link command"; exit 1; }
-      WRAP="-Wl,--wrap=win32_open -Wl,--wrap=win32_stat -Wl,--wrap=win32_lstat -Wl,--wrap=win32_access -Wl,--wrap=main"
+
+      MT=${ep.multitool}
+      ${ep.vfsShellFns}
+      WRAPPED="win32_open win32_stat win32_lstat win32_access"
+
+      # ld --wrap, in the IR. $2.. are the names to bind in bitcode object $1.
+      irwrap() {
+        local o="$1"; shift
+        isbc "$o" || return 0
+        local defs sedargs=() s
+        defs=$($MT nm --defined-only "$o" 2>/dev/null | awk '{print $NF}')
+        for s in "$@"; do
+          if printf '%s\n' "$defs" | grep -qx "$s"; then
+            sedargs+=(-e "s/@$s\\b/@__real_$s/g")
+          else
+            sedargs+=(-e "s/@$s\\b/@__wrap_$s/g")
+          fi
+        done
+        $MT opt -S "$o" -o "$o.ll"
+        sed -i "''${sedargs[@]}" "$o.ll"
+        $MT opt "$o.ll" -o "$o"
+        rm -f "$o.ll"
+      }
+
+      # Every bitcode member of every archive the link reads (libperl.a plus the
+      # static XS archives in static.list): any of them can call win32_open.
+      irwrapArchive() {
+        local a; a=$(readlink -f "$1"); local d; d=$(mktemp -d)
+        ( cd "$d" && $MT ar x "$a" )
+        for o in "$d"/*; do [ -f "$o" ] || continue; irwrap "$o" $WRAPPED; done
+        rm -f "$a" && $MT ar rcs "$a" "$d"/*
+        rm -rf "$d"
+      }
+      for a in $(printf '%s\n' $relink | grep -E '\.a$'); do
+        [ -f "$a" ] && irwrapArchive "$a"
+      done
+      for o in $(printf '%s\n' $relink | grep -E '\.o$'); do
+        [ -f "$o" ] && irwrap "$o" $WRAPPED
+      done
+      # perlmain's main steps aside for the dispatcher's (see dispatchObj).
+      if isbc perlmain.o; then
+        $MT opt -S perlmain.o -o perlmain.ll
+        sed -i -e 's/@main\b/@__real_main/g' perlmain.ll
+        $MT opt perlmain.ll -o perlmain.o
+        rm -f perlmain.ll
+      fi
+
       OBJS="${vfsObj}/vfs.o ${vfsObj}/miniz.o ${vfsObj}/unpin_zstd.o ${dispatchObj}/dispatch.o"
-      relink="''${relink/-o perl /-o perl $WRAP $OBJS }"
+      relink="''${relink/-o perl /-o perl $OBJS }"
       echo "RELINK: $relink"
       eval "$relink"
       test -f perl.exe || { echo "relink produced no perl.exe"; exit 1; }

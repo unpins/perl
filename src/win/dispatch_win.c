@@ -1,9 +1,10 @@
 /* Multicall dispatch for the embedded single-binary perl.exe (mingw win32).
  *
  * perl has no native argv[0] dispatch, so we intercept main itself. mingw's
- * CRT (__tmainCRTStartup) calls main() by symbol, so `-Wl,--wrap=main` routes
- * that reference to __wrap_main while __real_main stays perl's own generated
- * main (proven: the CRT lands in __wrap_main). When the binary is invoked under
+ * CRT (__tmainCRTStartup) calls main() by symbol; that reference lives in a
+ * native CRT object no IR rewrite reaches, so instead of routing it this object
+ * TAKES the name (-D__wrap_main=main) and perlmain's own main is IR-renamed to
+ * __real_main by the relink (windows.nix). When the binary is invoked under
  * an applet name (argv[0] basename, with any "/" or "\" stripped and a trailing
  * ".exe" removed, matches the curated list) we rewrite argv to
  *     [argv[0], "/zip/bin/<applet>", original args...]

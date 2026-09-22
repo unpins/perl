@@ -186,7 +186,7 @@
             cp ${siteCustomizePl} "$out/share/perl5/site_perl/$__ver/sitecustomize.pl"
           '';
 
-          mkPerl = { nixLdflags ? null, buildPhase ? null, extraPostInstall ? "" }:
+          mkPerl = { buildPhase ? null, extraPostInstall ? "" }:
             sp.perl.overrideAttrs (old:
             let
               # nixpkgs' interpreter.nix bakes an absolute `${coreutils}/bin/pwd`
@@ -363,13 +363,13 @@
               postInstall = remapPostInstall (old.postInstall or "")
                 + scrubNix + installSiteCustomize + extraPostInstall;
             }
-            // sp.lib.optionalAttrs (nixLdflags != null) {
-              NIX_LDFLAGS = nixLdflags;
-              # Keep the embedded VFS dormant for all build-time perls (miniperl,
-              # Configure probes, installperl); only the installed binary runs live.
+            // sp.lib.optionalAttrs (buildPhase != null) {
+              inherit buildPhase;
+              # Keep the embedded VFS dormant for every perl the build itself runs
+              # (miniperl, Configure probes, installperl); only the installed
+              # binary runs live.
               UNPIN_VFS_OFF = "1";
-            }
-            // sp.lib.optionalAttrs (buildPhase != null) { inherit buildPhase; });
+            });
 
           # ---- A: harvest build (no wrap, no VFS) ----
           treePerl = mkPerl { };
@@ -456,13 +456,10 @@
           # supplies main). ONE path for Linux and darwin, replacing the old
           # --wrap (Linux) + --redefine-sym-on-consolidated-object (darwin) split.
           #
-          # vfs.o/miniz.o/unpin_zstd.o ride NIX_LDFLAGS (harmless for the build-time
-          # perls: the VFS is dormant under UNPIN_VFS_OFF and unpinvfs_* passes real
-          # paths straight through to libc). The IR rewrite touches only the FINAL
-          # libperl.a + perlmain.o, so miniperl — run during the build to read real
-          # files — is unaffected.
+          # The IR rewrite and the VFS objects reach only the FINAL relink, so
+          # miniperl and the perl the build itself runs — both of which read real
+          # files — are untouched.
           enginePerl = mkPerl {
-            nixLdflags = "${vfsObj}/vfs.o ${vfsObj}/miniz.o ${vfsObj}/unpin_zstd.o";
             buildPhase = ''
               runHook preBuild
               J=-j$NIX_BUILD_CORES
@@ -476,10 +473,17 @@
               # arch-specific darwin stat/lstat rules) — shared from nix-lib.
               ${ep.vfsShellFns}
 
-              make $J libperl.a
-              # Rewrite every bitcode member of libperl.a (any native member passes
-              # through untouched), then repack with the bitcode-aware llvm ar so
-              # the LTO link resolves the members from the archive index.
+              # A full upstream build first: perl links with its own main and
+              # against a pristine libperl.a, so the interpreter that runs the
+              # rest of the build (pod/buildtoc, the utils) reads real files, and
+              # extensions like Time::HiRes compile exactly as upstream —
+              # splitting the build with `make perlmain.o` mid-way breaks HiRes's
+              # clockid_t probe.
+              make $J
+
+              # Now rewrite: every bitcode member of libperl.a (native members
+              # pass through untouched), repacked with the bitcode-aware llvm ar
+              # so the LTO link resolves them from the archive index …
               rm -rf .vfsm && mkdir .vfsm
               ( cd .vfsm && $MT ar x ../libperl.a )
               for o in .vfsm/*; do
@@ -487,22 +491,29 @@
                 isbc "$o" && bcrewrite "$o"
               done
               rm -f libperl.a && $MT ar rcs libperl.a .vfsm/*
-
-              # Full build first (perl links with its own main), so extensions like
-              # Time::HiRes compile exactly as upstream -- splitting the build with
-              # `make perlmain.o` mid-way breaks HiRes's clockid_t probe.
-              make $J
-              # Rename perlmain's main -> real_main in the IR, then relink just perl
-              # with dispatch.o (which supplies main). dispatch.o is pulled only by
-              # this FINAL link, never by miniperl (which keeps its own main).
+              # … and perlmain's main -> real_main, so dispatch.o can supply the
+              # entry. dispatch.o is pulled only by the FINAL link below, never
+              # by miniperl (which keeps its own main).
               if isbc perlmain.o; then
                 $MT opt -S perlmain.o -o perlmain.ll
                 sed -i -e 's/@main\b/@real_main/g' perlmain.ll
                 $MT opt perlmain.ll -o perlmain.o
                 rm -f perlmain.ll
               fi
-              export NIX_LDFLAGS="$NIX_LDFLAGS ${dispatchObj}/dispatch.o"
-              make $J perl
+
+              # Relink perl alone, reusing the exact command the `perl$x` rule
+              # would run (captured with `make -n`, so LDFLAGS/LIBS/ext.libs all
+              # match) with our four objects NAMED on it — what windows.nix does.
+              # They used to ride NIX_LDFLAGS, which the engine cannot carry: the
+              # cc wrapper `-Wl,`-prefixes every token it holds and the engine
+              # clang hands the whole token to ld.lld verbatim, "cannot open
+              # …-Wl,/nix/store/…/vfs.o". It only ever worked by luck.
+              rm -f perl
+              relink=$(make -n perl | grep -E -- '-o perl ' | tail -1)
+              test -n "$relink" || { echo "could not capture perl link command"; exit 1; }
+              OBJS="${vfsObj}/vfs.o ${vfsObj}/miniz.o ${vfsObj}/unpin_zstd.o ${dispatchObj}/dispatch.o"
+              eval "''${relink/-o perl /-o perl $OBJS }"
+              test -f perl || { echo "relink produced no perl"; exit 1; }
               runHook postBuild
             '';
             extraPostInstall = dropAndAlias;
@@ -542,10 +553,15 @@
       # bitcode and the shipped binary is LTO-linked — whole-program optimisation
       # for the single interpreter, the same toolchain binutils/curl/nmap/tcc use.
       # The /zip @INC embed is unchanged (runtimeEmbed self-EOF); the VFS is bound
-      # by IR symbol rewriting in `mk`'s build-B (bitcode has no `--wrap`). No
-      # `multicall` — perl does its own argv[0] dispatch (src/dispatch.c) and is
-      # too large to fold into the unpinbox mega, so it needs no bitcode module.
+      # by IR symbol rewriting in `mk`'s build-B (bitcode has no `--wrap`).
       engine = "unpin-llvm";
+      # perl does its own argv[0] dispatch (src/dispatch.c), so the applets are
+      # `aliases` of one program and nothing is self-folded. The block is here to
+      # put the `.exe` on the engine too, instead of the nixpkgs mingw-gcc cross.
+      multicall = {
+        windows = true;
+        programs = [{ name = "perl"; aliases = applets; }];
+      };
       embedMan = true;
       # `-Mstrict` forces `require strict` -> a /zip @INC module load through the
       # VFS stat/open shims, the exact path that leaked to libc on arm64-darwin
@@ -556,7 +572,8 @@
       build = pkgs: (mk pkgs).base;
       # Windows is mingw-NATIVE (not cosmo): nixpkgs' perl-cross cross only goes
       # part-way, so windows.nix runs winfix.sh (postConfigure) to make it a real
-      # win32 target, then relinks with the four win32_* wraps + main wrap (self-EOF VFS).
+      # win32 target, then relinks with the four win32_* interceptions + the
+      # dispatcher's main (self-EOF VFS), bound in the IR like the native build.
       windowsBuild = pkgs: (winMod pkgs).base;
       runtimeEmbed = {
         native = pkgs: base: { man = true; runtimeStage = (mk pkgs).incStage; };
