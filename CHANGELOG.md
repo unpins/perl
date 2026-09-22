@@ -5,7 +5,7 @@
 ### Changed
 
 - The Windows binary is now built by the same compiler as the Linux and macOS
-  ones. It is about 27% smaller (18.9 MB to 13.9 MB); `perl -v`, loading
+  ones. It is about 27% smaller (19.8 MB to 14.5 MB); `perl -v`, loading
   modules written in Perl and in C (JSON::PP, Digest::SHA, POSIX, Encode,
   Storable), reading and writing real files, the embedded library under `/zip`,
   and the bundled tools `json_pp`, `shasum`, `prove`, `corelist` and `ptar`
