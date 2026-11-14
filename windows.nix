@@ -50,6 +50,20 @@ let
       postPatch = ''
         substituteInPlace cnf/configure_tool.sh --replace-fail "cc -E -P" "cc -E"
       '';
+      # perl-cross picks extensions from probes that link against the C library
+      # alone. socket() lives in ws2_32 and mingw has no langinfo.h, so Socket and
+      # I18N::Langinfo would be dropped although win32 perl builds both (Langinfo
+      # via perl_langinfo.h). The values only gate extension selection: winfix's
+      # config.gc overlay sets the real d_*/i_* afterwards. Sys::Syslog rides the
+      # same d_socket gate but stays out: its Windows backend needs
+      # Win32::EventLog, which is not core, and its Makefile.PL keys the win32
+      # files on the build host's $^O.
+      configureFlags = (old.configureFlags or [ ]) ++ [
+        "-Dd_socket=define"
+        "-Di_langinfo=define"
+        "-Dd_nl_langinfo=define"
+        "--disable-mod=Sys-Syslog"
+      ];
       preConfigure = (old.preConfigure or "") + ''
         export READELF="${ep.bcIntrospect} readelf"
         export OBJDUMP="${ep.bcIntrospect} objdump"

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, `Errno` knew none of the standard error codes (`ENOENT`, `EINTR`,
+  `EEXIST`, …), so `$!{ENOENT}` was always false and modules that import them
+  failed to load — `HTTP::Tiny` among them.
+- On Windows, `Socket` was missing, and with it `IO::Socket::IP` and
+  `HTTP::Tiny`: perl had no networking. `I18N::Langinfo` was missing too.
+- On Windows, `Encode` handled only UTF-8, ASCII, Latin-1 and cp1252. Every
+  other encoding — UTF-16 and UTF-32, the other ISO-8859 and Windows/DOS code
+  pages (cp1250, cp437, …), KOI8-R, Shift_JIS, EUC-JP, GB2312, Big5, EUC-KR —
+  failed with `Unknown encoding`.
+
 ## [5.42.0-3] - 2026-09-26
 
 ### Changed
