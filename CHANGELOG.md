@@ -13,6 +13,10 @@
   other encoding — UTF-16 and UTF-32, the other ISO-8859 and Windows/DOS code
   pages (cp1250, cp437, …), KOI8-R, Shift_JIS, EUC-JP, GB2312, Big5, EUC-KR —
   failed with `Unknown encoding`.
+- On Windows, the modules nixpkgs updates for security fixes are now the same
+  versions as on Linux and macOS: `HTTP::Tiny` 0.094 (was 0.090),
+  `Compress::Raw::Zlib` 2.222 and `Compress::Raw::Bzip2` 2.218 (were 2.213),
+  and the matching `IO::Compress`.
 
 ## [5.42.0-3] - 2026-09-26
 

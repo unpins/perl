@@ -44,12 +44,26 @@ let
         ./patches/ext-re-static-aux.patch
         ./patches/perl-inc-macro-vfs-fixed-inc.patch
       ];
-      # Replace the cross postPatch: keep the harmless cpp `-E -P`->`-E` fix, drop
-      # the Cwd.pm /bin/pwd rewrite (Windows Cwd uses Win32 APIs; the rewrite only
-      # dragged the failing coreutils-mingw build).
-      postPatch = ''
-        substituteInPlace cnf/configure_tool.sh --replace-fail "cc -E -P" "cc -E"
-      '';
+      # nixpkgs' cross postPatch minus its Cwd.pm /bin/pwd rewrite (Windows Cwd
+      # uses Win32 APIs; the rewrite only dragged the failing coreutils-mingw
+      # build). The rest stays: the cpp `-E -P` fix, and the CPAN distributions
+      # nixpkgs bumps for CVEs (HTTP-Tiny, Compress-Raw-*, IO-Compress…), which
+      # the other targets ship. Dropping the text is not enough, the coreutils
+      # edge lives in the string context — same cut as flake.nix's
+      # crossBasePostPatch.
+      postPatch =
+        let
+          b = old.postPatch or "";
+          plain = builtins.unsafeDiscardStringContext;
+          cwd = plain ''
+            substituteInPlace dist/PathTools/Cwd.pm \
+              --replace "/bin/pwd" '${cross.coreutils}/bin/pwd'
+          '';
+        in
+        assert lib.hasInfix cwd (plain b);
+        builtins.appendContext
+          (builtins.replaceStrings [ cwd ] [ "" ] (plain b))
+          (lib.filterAttrs (k: _: !(lib.hasInfix "-coreutils-" k)) (builtins.getContext b));
       # perl-cross picks extensions from probes that link against the C library
       # alone. socket() lives in ws2_32 and mingw has no langinfo.h, so Socket and
       # I18N::Langinfo would be dropped although win32 perl builds both (Langinfo
