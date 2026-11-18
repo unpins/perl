@@ -83,24 +83,18 @@
 
           perlPatches = [ ./patches/ext-re-static-aux.patch ];
 
-          # A real musl (of the same 1.2.x ABI the engine ships) whose header dir
-          # gives perl's native Configure something real to scan — the engine's own
-          # musl headers live inside the clang binary's VFS, invisible to Configure's
-          # `test -f` probes. Same package nixpkgs' perl expr resolves via
-          # stdenv.cc.libc (null under the engine). A fresh non-engine nixpkgs import
-          # (like tcc's linuxPkgs) so the swap doesn't drag it onto the engine.
-          # Linux native only: darwin detects against its SDK, crosses use perl-cross.
-          # Use the HOST platform's musl, not the build host's — under the engine an
-          # i686 target counts as native (x86_64 canExecute i686), so buildPlatform
-          # (x86_64) headers would give the 32-bit compile the wrong struct layouts
-          # and segfault miniperl. hostPlatform.system ("i686-linux") is x86_64-
-          # runnable, so its real 32-bit musl builds here; for x86_64 host==build.
+          # The target musl's headers (nix-lib's header-only install), so perl's
+          # native Configure has real files for its `test -f` probes: the
+          # engine's own headers live inside the clang binary's VFS. nixpkgs'
+          # perl expr finds them via stdenv.cc.libc, null under the engine.
+          # Linux native only: darwin detects against its SDK, crosses use
+          # perl-cross. HOST headers, not the build host's: under the engine an
+          # i686 target counts as native, and x86_64 headers would give the
+          # 32-bit compile the wrong struct layouts and segfault miniperl.
           engineIncFix =
             if crossCompiling || isDarwin then [ ]
             else
-              let musl = (import pkgs.path { inherit (sp.stdenv.hostPlatform) system; })
-                .pkgsStatic.stdenv.cc.libc;
-              in [ "-Dlocincpth=${sp.lib.getDev musl}/include" ];
+              [ "-Dlocincpth=${sp.unpinMuslHeaders}/include" ];
 
           # Shared engine-perl plumbing (nix-lib): the `llvm` multitool
           # (referenced at eval time via unpinToolchain — one build-host toolchain
