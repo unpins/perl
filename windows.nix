@@ -23,10 +23,6 @@ let
   bperl = "${pkgs.buildPackages.perl}/bin/perl";  # native perl runs the wf_*.pl helpers
   winSrc = ./src/win;
 
-  # static mcfgthreads (.a) — winfix points ldflags at this dir; the .exe folds
-  # libmcfgthread instead of importing the DLL.
-  mcfA = "${cross.windows.mcfgthreads}/lib";
-
   # perl-cross probes its target objects with readelf/objdump, which the
   # engine ships only as the `llvm` multitool, and the objects are bitcode.
   ep = ulib.enginePerl {
@@ -84,7 +80,7 @@ let
       '';
       postConfigure = (old.postConfigure or "") + ''
         echo "=== unpin winfix (win32-native + /zip @INC) ==="
-        NPERL=${bperl} bash ${winSrc}/winfix.sh ${winSrc} ${mcfA}
+        NPERL=${bperl} bash ${winSrc}/winfix.sh ${winSrc}
         # nixpkgs' preConfigure rewrites this to use the dynamic system zlib
         # (-> a zlib1.dll import). Flip it back to the distribution default so
         # Compress::Raw::Zlib statically folds its bundled zlib-src instead,

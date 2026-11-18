@@ -4,14 +4,12 @@
 # libperl, fix exe suffix / FILE accessors / Errno+HiRes osname, and pin @INC to
 # /zip for the VFS. Run from the perl source root, after perl-cross configure.
 #
-# Usage: winfix.sh <wfdir> <mcfstatic-libdir>
+# Usage: winfix.sh <wfdir>
 #   $NPERL   native (build) perl to run the wf_*.pl helpers
 #   <wfdir>  dir holding wf_overlay/stdio/flags/makefile/timehires/errno.pl
-#   <mcfstatic-libdir>  dir with libmcfgthread.a (static mcfgthreads)
 set -e
 W="$(pwd)"
 WFDIR="$1"
-MCF="$2"
 : "${NPERL:?NPERL (native perl) must be set}"
 GCSRC="$W/win32/config.gc"
 
@@ -72,8 +70,8 @@ setv sitearchexp    "'/zip/$PV/site_perl/MSWin32-x64'"
 # 3) stdio FILE accessors -> safe PERLIO_FILE_* (matches official win32 config.h footer)
 "$NPERL" "$WFDIR/wf_stdio.pl" config.sh
 
-# 4) ccflags/ldflags/libs: win32 host-layer includes (absolute), static mcfgthread, win32 syslibs
-"$NPERL" "$WFDIR/wf_flags.pl" config.sh "$W" "$MCF"
+# 4) ccflags/ldflags/libs: win32 host-layer includes (absolute), win32 syslibs
+"$NPERL" "$WFDIR/wf_flags.pl" config.sh "$W"
 
 # 4a) VFS @INC fix: perl_inc_macro.h's `#if defined(WIN32)` ignores the literal
 # PRIVLIB/SITELIB_EXP and calls PerlEnv_*_path (relocatable-to-exe); the patched
