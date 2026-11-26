@@ -14,7 +14,7 @@
 # blob object), dropping lib/perl5 on disk; withUnpinEmbed stages that tree + the
 # applet scripts + sitecustomize.pl and packs perl.exe's single EOF ZIP (aliases
 # and man included).
-{ ulib, applets, appletsCsv }:
+{ ulib, applets }:
 pkgs:
 let
   lib = pkgs.lib;
@@ -246,13 +246,11 @@ in
 # The PRISTINE win32 VFS perl base + the embed spec consumed by
 # mkStandaloneFlake's runtimeEmbed.windows → unpinEmbedWrap (the single embed
 # path): @INC runtime tree + applet alias harvest (auto from the bin/ symlinks
-# dropAndAlias leaves) + man (harvest perl.exe's own share/man, falling back to
-# the version-locked nixpkgs perl man — the same graft mkStandaloneFlake applies).
+# dropAndAlias leaves); man comes from mkStandaloneFlake's defaults (the
+# version-locked nixpkgs perl man graft).
 {
   base = vfsPerl;
   embed = {
-    man = true;
-    manFallback = "${pkgs.perl.man or pkgs.perl}";
     runtimeStage = winIncStage;
   };
 }

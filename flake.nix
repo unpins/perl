@@ -60,7 +60,6 @@
         "prove" "ptar" "ptargrep" "shasum"
         "streamzip" "zipdetails"
       ];
-      appletsCsv = builtins.concatStringsSep "," applets;
 
       # The whole embedded-perl pipeline for one target's static package set:
       #   A (treePerl) installs share/perl5 with @INC pinned to /zip      →
@@ -537,7 +536,7 @@
         # dropAndAlias leaves), and the man pages (man = true harvests the base's
         # own share/man).
         { base = vfsPerl; inherit incStage; };
-      winMod = import ./windows.nix { inherit ulib applets appletsCsv; };
+      winMod = import ./windows.nix { inherit ulib applets; };
     in
     ulib.mkStandaloneFlake {
       inherit self;
@@ -556,7 +555,6 @@
         windows = true;
         programs = [{ name = "perl"; aliases = applets; }];
       };
-      embedMan = true;
       # `-Mstrict` forces `require strict` -> a /zip @INC module load through the
       # VFS stat/open shims, the exact path that leaked to libc on arm64-darwin
       # (vfsSed's missing plain `_stat`/`_lstat`). `--version` never loads a
