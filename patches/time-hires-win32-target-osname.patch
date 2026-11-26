@@ -1,0 +1,19 @@
+Time::HiRes: take the win32 branch when the TARGET is Windows.
+
+Makefile.PL keys its win32 configuration on $^O, which is the build host's
+(linux) under perl-cross, so it ran the probe path instead: no
+TIME_HIRES_CLOCK_GETTIME/GETRES, and clock_gettime/clock_getres died with
+"unimplemented in this platform". The win32 branch selects HiRes.xs's own
+QueryPerformanceCounter implementations, as on a native Windows build.
+
+--- a/dist/Time-HiRes/Makefile.PL
++++ b/dist/Time-HiRes/Makefile.PL
+@@ -1042,7 +1042,7 @@
+     } else {
+         print "Configuring Time::HiRes...\n";
+         1 while unlink("define");
+-        if ($^O =~ /Win32/i) {
++        if ($^O =~ /Win32/i || $Config{osname} =~ /Win32/i) {
+             DEFINE('SELECT_IS_BROKEN');
+             # we provide our own implementations of those functions on win32
+             DEFINE('TIME_HIRES_CLOCK_GETTIME');

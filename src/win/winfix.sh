@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Turn a freshly-`configure`d perl-cross tree into a real win32-native target:
 # overlay win32 OS/ABI capability vars, wire the win32 host layer (win32/*.c) into
-# libperl, fix exe suffix / FILE accessors / Errno+HiRes osname, and pin @INC to
+# libperl, fix exe suffix / FILE accessors, and pin @INC to
 # /zip for the VFS. Run from the perl source root, after perl-cross configure.
 #
 # Usage: winfix.sh <wfdir>
 #   $NPERL   native (build) perl to run the wf_*.pl helpers
-#   <wfdir>  dir holding wf_overlay/stdio/flags/makefile/timehires/errno.pl
+#   <wfdir>  dir holding wf_overlay/stdio/flags/makefile/encode.pl
 set -e
 W="$(pwd)"
 WFDIR="$1"
@@ -82,12 +82,6 @@ sed -i -E "s#^ccflags='([^']*)'#ccflags='\\1 -DUNPIN_VFS_FIXED_INC'#" config.sh
 
 # 4b) perl-cross Makefile: add win32 host objs to TARGET libperl only (NOT src; that hits host miniperl)
 "$NPERL" "$WFDIR/wf_makefile.pl" Makefile
-
-# 4c) Time::HiRes: honor TARGET osname for the win32 (skip-probe) branch
-"$NPERL" "$WFDIR/wf_timehires.pl" dist/Time-HiRes/Makefile.PL
-
-# 4d) Errno: honor TARGET osname (use mingw errno.h, not host /usr/include)
-"$NPERL" "$WFDIR/wf_errno.pl" ext/Errno/Errno_pm.PL
 
 # 4e) Encode's XS sub-extensions (perl-cross does not descend into cpan/Encode)
 "$NPERL" "$WFDIR/wf_encode.pl" config.sh Makefile

@@ -1,0 +1,43 @@
+Errno: take the win32 path when the TARGET is Windows.
+
+Errno_pm.PL keys its MinGW handling on $^O, which is the build host's (linux)
+under perl-cross, so it grabbed the host's /usr/include/errno.h. With the
+target's osname it goes through includes.c instead; errno.h is included by
+name there because the engine's mingw headers exist only inside clang, so the
+loop's `-f` test drops it and Errno.pm would lose ENOENT, EINTR, EEXIST...
+
+--- a/ext/Errno/Errno_pm.PL
++++ b/ext/Errno/Errno_pm.PL
+@@ -6,7 +6,7 @@
+ 
+ my %err = ();
+ 
+-my $IsMSWin32 = $^O eq 'MSWin32';
++my $IsMSWin32 = $^O eq 'MSWin32' || $Config{osname} eq 'MSWin32';
+ 
+ unlink "Errno.pm" if -f "Errno.pm";
+ unlink "Errno.tmp" if -f "Errno.tmp";
+@@ -14,12 +14,13 @@
+ select OUT;
+ my $file;
+ my @files = get_files();
+-if ($Config{gccversion} ne '' && $^O eq 'MSWin32') {
++if ($Config{gccversion} ne '' && $IsMSWin32) {
+     # MinGW complains "warning: #pragma system_header ignored outside include
+     # file" if the header files are processed individually, so include them
+     # all in .c file and process that instead.
+     open INCS, '>', 'includes.c' or
+ 	die "Cannot open includes.c";
++    print INCS qq[#include <errno.h>\n];
+     foreach $file (@files) {
+ 	next if $file eq 'errno.c';
+ 	next unless -f $file;
+@@ -111,7 +112,7 @@
+     # When cross-compiling we may store a path for gcc's "sysroot" option:
+     my $sysroot = $Config{sysroot} || '';
+     my $linux_errno_h;
+-    if ($^O eq 'linux') {
++    if ($^O eq 'linux' && !$IsMSWin32) {
+ 	# Some Linuxes have weird errno.hs which generate
+ 	# no #file or #line directives
+ 	($linux_errno_h) = grep { -e $_ } map { "$_/errno.h" }

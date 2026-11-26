@@ -32,13 +32,16 @@ let
   };
 
   # ---- the win32-native perl base: drop the cross coreutils-mingw postPatch
-  # (bakes a broken ${coreutils}/bin/pwd into Cwd.pm), apply the inc-macro VFS
-  # patch, and run winfix after perl-cross configure.
+  # (bakes a broken ${coreutils}/bin/pwd into Cwd.pm), apply the win32 patches
+  # (inc-macro VFS, and Time::HiRes/Errno keyed on the target), and run winfix
+  # after perl-cross configure.
   mkWinPerl = { buildPhase ? null, extraPostInstall ? "" }:
     cross.perl.overrideAttrs (old: {
       patches = (old.patches or [ ]) ++ [
         ./patches/ext-re-static-aux.patch
         ./patches/perl-inc-macro-vfs-fixed-inc.patch
+        ./patches/time-hires-win32-target-osname.patch
+        ./patches/errno-win32-target-osname.patch
       ];
       # nixpkgs' cross postPatch minus its Cwd.pm /bin/pwd rewrite (Windows Cwd
       # uses Win32 APIs; the rewrite only dragged the failing coreutils-mingw

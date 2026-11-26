@@ -17,6 +17,8 @@
   versions as on Linux and macOS: `HTTP::Tiny` 0.094 (was 0.090),
   `Compress::Raw::Zlib` 2.222 and `Compress::Raw::Bzip2` 2.218 (were 2.213),
   and the matching `IO::Compress`.
+- On Windows, `Time::HiRes::clock_gettime` and `clock_getres` died with
+  "unimplemented in this platform"; they now work, monotonic clock included.
 
 ## [5.42.0-3] - 2026-09-26
 
