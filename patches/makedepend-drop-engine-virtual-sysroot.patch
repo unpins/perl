@@ -1,0 +1,21 @@
+Drop the engine's virtual sysroot paths from makedepend's output.
+
+The engine's clang preprocessor reports musl headers under the virtual
+clang-VFS sysroot /__unpin_ziglib__/..., which are not real files. makedepend
+would record them as Makefile prerequisites and make then dies ("No rule to
+make target /__unpin_ziglib__/.../alloca.h"). Filter them in the same sed that
+already drops the <built-in>/<command-line> markers; dependency tracking is
+irrelevant to a one-shot build. Native only: the cross builds use perl-cross,
+which doesn't run makedepend_file.
+
+--- a/makedepend_file.SH
++++ b/makedepend_file.SH
+@@ -151,7 +151,7 @@
+ 	    -e '1d' \
+ 	    -e '/^#.*<stdin>/d' \
+             -e '/^#.*<builtin>/d' \
+-            -e '/^#.*<built-in>/d' \
++            -e '/^#.*<built-in>/d' -e '\#/__unpin_ziglib__#d' \
+             -e '/^#.*<command line>/d' \
+             -e '/^#.*<command-line>/d' \
+ 	    -e '/^#.*"-"/d' \

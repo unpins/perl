@@ -4,11 +4,11 @@
  * binary is invoked under an applet name (e.g. argv[0] basename == "json_pp"),
  * we rewrite argv to
  *     [argv[0], "/zip/bin/<applet>", original args...]
- * and hand off to perl. The /zip/bin/<applet> script is served from the blob by
+ * and hand off to perl. The /zip/bin/<applet> script is served from the EOF ZIP by
  * the @INC VFS, exactly like a module -- no script on disk. Invoked as plain
  * "perl" (or any non-applet name) we pass argv straight through.
  *
- *   Engine (Linux + macOS, -DUNPIN_DISPATCH_NOWRAP): under the unpin-llvm engine
+ *   Engine (Linux + macOS): under the unpin-llvm engine
  *                  every object is LLVM bitcode, so neither `ld --wrap` (dropped
  *                  by the mega fold) nor `objcopy --redefine-sym` (can't edit a
  *                  bitcode symtab) can bind the entry. perlmain's `@main` is
@@ -22,7 +22,7 @@
  * single static -Uusedl binary. XS-codegen/dev tools (xsubpp, h2xs, enc2xs,
  * h2ph, pl2pm, instmodsh), mail/config helpers (perlbug, perlthanks, libnetcfg),
  * the install-layout probe (perlivp), Text::Diff-dependent ptardiff, and the
- * tools that need a .pod we drop from the blob (perldoc, splain -> perldiag.pod)
+ * tools that need a .pod we drop from the EOF ZIP (perldoc, splain -> perldiag.pod)
  * are intentionally excluded.
  */
 #include <stdio.h>
@@ -56,7 +56,6 @@ static int unpin_dispatch(int argc, char **argv, char **envp,
     return real(argc, argv, envp);
 }
 
-#ifdef UNPIN_DISPATCH_NOWRAP
 /* Engine (linux + darwin): perlmain's main() is IR-renamed to real_main; we
  * supply the crt entry. Only the FINAL perl link pulls this object in -- never
  * miniperl, whose own main is left untouched. */
@@ -64,10 +63,3 @@ extern int real_main(int argc, char **argv, char **envp);
 int main(int argc, char **argv, char **envp) {
     return unpin_dispatch(argc, argv, envp, real_main);
 }
-#else
-/* Off-engine: -Wl,--wrap=main, for a toolchain that links real objects. */
-extern int __real_main(int argc, char **argv, char **envp);
-int __wrap_main(int argc, char **argv, char **envp) {
-    return unpin_dispatch(argc, argv, envp, __real_main);
-}
-#endif

@@ -8,7 +8,7 @@
  * an applet name (argv[0] basename, with any "/" or "\" stripped and a trailing
  * ".exe" removed, matches the curated list) we rewrite argv to
  *     [argv[0], "/zip/bin/<applet>", original args...]
- * and hand off to perl. The /zip/bin/<applet> script is served from the blob by
+ * and hand off to perl. The /zip/bin/<applet> script is served from the EOF ZIP by
  * the @INC VFS, exactly like a module -- no script on disk. Invoked as plain
  * "perl"/"perl.exe" (or any non-applet name) we pass argv straight through.
  *

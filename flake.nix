@@ -222,7 +222,9 @@
                 then builtins.filter
                   (p: !(sp.lib.hasInfix "no-sys-dirs" (toString p))) base
                 else base
-              ) ++ perlPatches;
+              ) ++ perlPatches
+              ++ sp.lib.optional (!crossCompiling) ./patches/makedepend-drop-engine-virtual-sysroot.patch
+              ++ sp.lib.optional (crossCompiling && !isDarwin) ./patches/errno-get-files-engine-stub.patch;
               configureFlags = (if crossCompiling
                 # perl-cross keeps ONE value per -A<var>= (a second -Accflags=
                 # replaces the first, where perl's Configure appends), so on a cross
@@ -290,34 +292,6 @@
               # need them to compile-only, cross-safe equivalents.
               + sp.lib.optionalString (crossCompiling && isDarwin) ''
                 ${pkgs.buildPackages.perl}/bin/perl ${./src/cross_darwin.pl}
-              ''
-              # The engine's clang preprocessor emits musl headers under the
-              # virtual clang-VFS sysroot /__unpin_ziglib__/… (not real files).
-              # perl's makedepend would record those as Makefile prerequisites and
-              # make then dies ("No rule to make target /__unpin_ziglib__/.../
-              # alloca.h"). Drop them in the same makedepend_file sed that already
-              # filters the <built-in>/<command-line> line markers — dependency
-              # tracking is irrelevant to a one-shot build. Engine analogue of the
-              # binutils --disable-dependency-tracking fix. Native only (the cross
-              # builds use perl-cross, which doesn't run makedepend_file).
-              + sp.lib.optionalString (!crossCompiling) ''
-                substituteInPlace makedepend_file.SH --replace-fail \
-                  ${sp.lib.escapeShellArg "-e '/^#.*<built-in>/d' \\"} \
-                  ${sp.lib.escapeShellArg "-e '/^#.*<built-in>/d' -e '\\#/__unpin_ziglib__#d' \\"}
-              ''
-              # Errno.pm's generator scans the target's errno.h AS A FILE (via
-              # $sysroot/usr/include + locincpth) to harvest the E* macro NAMES,
-              # then reads their VALUES by preprocessing `#include <errno.h>`. Under
-              # the engine the musl headers are virtual (inside clang), so the file
-              # scan finds nothing → "No error definitions found". The value step
-              # already works (the engine cc resolves <errno.h>), so only the name
-              # harvest needs fixing: short-circuit get_files to a stub TU the engine
-              # cc expands (`clang -E -dM` over `#include <errno.h>` lists every E*).
-              # Cross only; the native build finds errno.h via engineIncFix's locincpth.
-              + sp.lib.optionalString (crossCompiling && !isDarwin) ''
-                substituteInPlace ext/Errno/Errno_pm.PL --replace-fail \
-                  'sub get_files {' \
-                  'sub get_files { if (open(my $s, ">", "unpin_errno.c")) { print $s "#include <errno.h>\n"; close $s; return ("unpin_errno.c"); }'
               '';
               preConfigure = (old.preConfigure or "")
                 # perl-cross never adds -fno-strict-aliasing -fwrapv on its own, and
@@ -429,9 +403,9 @@
             dontUnpack = true;
             buildPhase = ''
               cp ${dispatchSrc} dispatch.c
-              # -DUNPIN_DISPATCH_NOWRAP: supply plain main() (calls real_main).
-              # The engine renames perlmain's main -> real_main in the IR.
-              $CC -O2 -DUNPIN_DISPATCH_NOWRAP -c dispatch.c -o dispatch.o
+              # dispatch.c supplies main(); the engine renames perlmain's main
+              # -> real_main in the IR.
+              $CC -O2 -c dispatch.c -o dispatch.o
             '';
             installPhase = ''mkdir -p $out; cp dispatch.o $out/'';
           };

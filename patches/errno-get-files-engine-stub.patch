@@ -1,0 +1,22 @@
+Errno: harvest the E* names from a stub TU the engine cc expands.
+
+Errno.pm's generator scans the target's errno.h AS A FILE (via
+$sysroot/usr/include + locincpth) for the E* macro names, then reads their
+values by preprocessing `#include <errno.h>`. Under the engine the musl
+headers are virtual (inside clang), so the file scan finds nothing ("No error
+definitions found"). The value step already works, so only the name harvest
+changes: get_files returns a stub TU that `clang -E -dM` expands to every E*.
+Linux crosses only; the native build finds errno.h via engineIncFix's
+locincpth.
+
+--- a/ext/Errno/Errno_pm.PL
++++ b/ext/Errno/Errno_pm.PL
+@@ -106,7 +106,7 @@
+     return "$cppstdin $Config{cppflags} $Config{cppminus}";
+ }
+ 
+-sub get_files {
++sub get_files { if (open(my $s, ">", "unpin_errno.c")) { print $s "#include <errno.h>\n"; close $s; return ("unpin_errno.c"); }
+     my @file;
+     # When cross-compiling we may store a path for gcc's "sysroot" option:
+     my $sysroot = $Config{sysroot} || '';
