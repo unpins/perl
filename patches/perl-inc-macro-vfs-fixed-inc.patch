@@ -1,3 +1,11 @@
+perl_inc_macro.h: honour the literal @INC under UNPIN_VFS_FIXED_INC.
+
+On WIN32 the header ignores PRIVLIB_EXP/SITELIB_EXP and asks
+PerlEnv_*_path for directories next to the exe. The Windows build keeps its
+library in the embedded /zip tree, so with that branch taken perl never
+looks there. winfix.sh adds -DUNPIN_VFS_FIXED_INC to ccflags; only perl.c
+includes this header.
+
 --- a/perl_inc_macro.h
 +++ b/perl_inc_macro.h
 @@ -37,7 +37,7 @@

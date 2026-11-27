@@ -53,7 +53,8 @@
     let
       ulib = unpins-lib.lib;
 
-      # The 16 curated multicall applets. Kept in sync with src/dispatch.c.
+      # The 16 curated multicall applets. Kept in sync with src/dispatch.c
+      # and src/win/dispatch_win.c.
       applets = [
         "cpan" "corelist" "encguess" "json_pp" "piconv"
         "pod2html" "pod2man" "pod2text" "pod2usage" "podchecker"

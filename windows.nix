@@ -154,9 +154,9 @@ let
   # ---- B: embedded build. A normal `make` first (so XS link-lib probes and
   # ext.libs are generated cleanly — injecting our objects via NIX_LDFLAGS would
   # corrupt those probes and drop -lz/-lm). Then relink ONLY perl.exe with our
-  # objects (vfs.o + miniz.o, self-EOF — no blob object), reusing the exact link
-  # the perl$x rule would run (captured with `make -n perl`, so LDFLAGS/LIBS/
-  # static.list/ext.libs all match).
+  # objects (vfs.o, miniz.o, unpin_zstd.o, dispatch.o; self-EOF, no blob object),
+  # reusing the exact link the perl$x rule would run (captured with `make -n
+  # perl`, so LDFLAGS/LIBS/static.list/ext.libs all match).
   #
   # The four win32_* interceptions used to be `ld --wrap`. Under the engine every
   # object is bitcode and the multicall module replays this link with `ld.lld -r`,
@@ -235,9 +235,10 @@ let
 
   # The @INC tree + applet scripts are embedded; ship none on disk. Drop the
   # /nix-shebanged standalone bin scripts and expose the applets as transient
-  # symlinks to perl.exe — withAliases harvests their names into UNPIN_META and
-  # then deletes them (the unpin installer recreates the commands as .cmd wrappers
-  # on the target). dispatch.o keys on argv[0], so each name runs its applet.
+  # symlinks to perl.exe — withAliases harvests their names into the ZIP's
+  # `unpin/aliases` and then deletes them (the unpin installer recreates the
+  # commands as .cmd wrappers on the target). dispatch.o keys on argv[0], so each
+  # name runs its applet.
   dropAndAlias = ''
     rm -rf "$out/lib/perl5"
     find "$out/bin" -maxdepth 1 -type f ! -name 'perl.exe' ! -name 'perl5.*.exe' -delete

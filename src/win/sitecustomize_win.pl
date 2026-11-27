@@ -1,4 +1,4 @@
-# Embedded at /zip/5.42.0/site_perl/sitecustomize.pl and served from the blob.
+# Embedded at /zip/5.42.0/site_perl/sitecustomize.pl and served from the EOF ZIP.
 # perl built -Dusesitecustomize does `do "$sitelibexp/sitecustomize.pl"` at every
 # startup ($sitelibexp=/zip/5.42.0/site_perl). The single binary is -Uusedl so XS
 # can't load; this only enables pure-Perl module installs into a per-user cache

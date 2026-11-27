@@ -73,11 +73,7 @@ setv sitearchexp    "'/zip/$PV/site_perl/MSWin32-x64'"
 # 4) ccflags/ldflags/libs: win32 host-layer includes (absolute), win32 syslibs
 "$NPERL" "$WFDIR/wf_flags.pl" config.sh "$W"
 
-# 4a) VFS @INC fix: perl_inc_macro.h's `#if defined(WIN32)` ignores the literal
-# PRIVLIB/SITELIB_EXP and calls PerlEnv_*_path (relocatable-to-exe); the patched
-# header guards those on UNPIN_VFS_FIXED_INC so the literal /zip @INC is used.
-# Appending the -D to ccflags (-> CFLAGS) makes `make` compile perl.o with it
-# (only perl.c includes perl_inc_macro.h, so it's a no-op for every other object).
+# 4a) /zip @INC: see patches/perl-inc-macro-vfs-fixed-inc.patch.
 sed -i -E "s#^ccflags='([^']*)'#ccflags='\\1 -DUNPIN_VFS_FIXED_INC'#" config.sh
 
 # 4b) perl-cross Makefile: add win32 host objs to TARGET libperl only (NOT src; that hits host miniperl)
