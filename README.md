@@ -59,3 +59,10 @@ The [Releases](https://github.com/unpins/perl/releases) page has standalone bina
   on Linux and macOS, `%LOCALAPPDATA%\unpin\perl5` on Windows.
   This works for pure-Perl modules. Modules with C code cannot be added: the
   binary cannot load compiled extensions.
+- **Not included:** programs that need what a single binary does not carry:
+  `perldoc` and `splain` (the `.pod` files are not shipped; read the
+  documentation with `unpin man perl <page>`), the programs for writing C
+  extensions (`xsubpp`, `h2xs`, `h2ph`, `enc2xs` and `instmodsh`), the
+  install-check and bug-report programs `perlivp`, `perlbug`, `perlthanks` and
+  `libnetcfg`, the Perl 4 converter `pl2pm`, and `ptardiff`, which needs
+  `Text::Diff` from CPAN.

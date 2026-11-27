@@ -14,9 +14,9 @@
   pages (cp1250, cp437, …), KOI8-R, Shift_JIS, EUC-JP, GB2312, Big5, EUC-KR —
   failed with `Unknown encoding`.
 - On Windows, the modules nixpkgs updates for security fixes are now the same
-  versions as on Linux and macOS: `HTTP::Tiny` 0.094 (was 0.090),
+  versions as on Linux and macOS: `HTTP::Tiny` 0.096 (was 0.090),
   `Compress::Raw::Zlib` 2.222 and `Compress::Raw::Bzip2` 2.218 (were 2.213),
-  and the matching `IO::Compress`.
+  and `IO::Compress` 2.223.
 - On Windows, `Time::HiRes::clock_gettime` and `clock_getres` died with
   "unimplemented in this platform"; they now work, monotonic clock included.
 
