@@ -313,6 +313,13 @@
                 + sp.lib.optionalString crossCompiling ''
                   export HOSTCFLAGS="-fno-strict-aliasing -fwrapv"
                 ''
+                # Without $HOSTCC the buildmini pass takes whatever `gcc` is on PATH:
+                # nixpkgs' depsBuildBuild gcc on Linux, but on a darwin build host no
+                # input has one and the system's /usr/bin/gcc leaks in (it made the
+                # build programs arm64 on the x86_64 -> aarch64 darwin cross).
+                + sp.lib.optionalString crossCompiling ''
+                  export HOSTCC=${sp.buildPackages.stdenv.cc}/bin/cc
+                ''
                 + zipConfigOver;
               postConfigure = (old.postConfigure or "")
                 + sp.lib.optionalString crossCompiling zipConfigCross;
