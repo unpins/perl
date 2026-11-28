@@ -1,0 +1,193 @@
+perl-cross on a Mach-O build host (the x86_64-darwin -> aarch64-darwin cross).
+
+perl-cross has no darwin support and assumes an ELF build host: it reads type
+sizes with `readelf --syms` and byte order with `objdump`, and dies when
+either is missing. A Mach-O object can't be read by them anyway. Applied on
+top of perl-cross's tree (nixpkgs copies it into perl's source in postUnpack);
+the Linux crosses keep the readelf path, their build host being ELF.
+
+- cnf/configure_tool.sh: readelf/objdump not fatal (nothing calls them after
+  this); `*darwin*` in the OS guesser, without which osname is empty and
+  cnf/hints/darwin is never picked; darwin shared-object names and link flags,
+  which perl-cross defines to ELF values before any hint runs (`-Wl,-E`, which
+  Apple ld rejects).
+- cnf/configure_type.sh: sizeof by compile-only bisection
+  (`int p[(sizeof(T)==K)?1:-1];`), correct for both passes and both arches.
+- cnf/configure_type_sel.sh: byte order from __BYTE_ORDER__, which the cross
+  compiler already gives for the target.
+- cnf/configure_misc.sh: dlext `bundle`, not `so`.
+- Makefile: the final perl link exports its symbols with `-export_dynamic`
+  rather than GNU `-Wl,-E`, so XS bundles still resolve against it.
+- cnf/hints/darwin (new): the values perl-cross can't probe without running a
+  target binary, as cnf/hints/linux does for Linux. Without them config_h.SH
+  emits malformed `#  HAS_FOO` lines (first death: HAS_NANOSLEEP).
+
+--- a/cnf/configure_misc.sh
++++ b/cnf/configure_misc.sh
+@@ -32,7 +32,10 @@
+ define usemmldlt 'define'
+ 
+ # Used by modules?
+-define dlext 'so'
++case "$targetarch" in
++*darwin*) define dlext 'bundle' ;;
++*) define dlext 'so' ;;
++esac
+ define dlsrc 'dl_dlopen.xs'
+ 
+ # Required by lib/Config.t, and configpm may use these.
+--- a/cnf/configure_tool.sh
++++ b/cnf/configure_tool.sh
+@@ -88,8 +88,8 @@
+ whichprog ar AR ar || die "Cannot find ar"
+ whichprog nm NM nm
+ whichprog ranlib RANLIB ranlib
+-whichprog readelf READELF readelf || die "Cannot find readelf"
+-whichprog objdump OBJDUMP objdump || die "Cannot find objdump"
++whichprog readelf READELF readelf || true
++whichprog objdump OBJDUMP objdump || true
+ 
+ # XXX: this looks wrong, but the usemmldlt code depends on $ld being able
+ # to compile try.c. What kind of moron could have written that. Oh wait.
+@@ -149,15 +149,29 @@
+ # File name extensions, must be set before running any compile/link tests
+ define _o '.o'
+ define _a '.a'
+-define so 'so'
+-define _exe ''
+-
+-# Used only for modules
+-define cccdlflags '-fPIC -Wno-unused-function'
+-define ccdlflags '-Wl,-E'
+-
+-# Misc flags setup
+-predef lddlflags "-shared"	# modules
++# unpins darwin cross: Mach-O wants different shared-object naming and
++# link flags than the ELF/GNU defaults; $targetarch is known here (osname
++# is guessed later) and is *darwin* for both the buildmini and target pass.
++case "$targetarch" in
++*darwin*)
++	define so 'dylib'
++	define _exe ''
++	define cccdlflags '-fPIC -Wno-unused-function'
++	define ccdlflags ''
++	predef lddlflags "-bundle -undefined dynamic_lookup"
++	;;
++*)
++	define so 'so'
++	define _exe ''
++
++	# Used only for modules
++	define cccdlflags '-fPIC -Wno-unused-function'
++	define ccdlflags '-Wl,-E'
++
++	# Misc flags setup
++	predef lddlflags "-shared"	# modules
++	;;
++esac
+ predef ccflags ''		# perl and modules
+ predef ldflags ''		# perl only?
+ predef cppflags ''		# unused?
+@@ -274,6 +288,10 @@
+ 			define osname "midipix"
+ 			result "Midipix"
+ 			;;
++		*darwin*)
++			define osname "darwin"
++			result "Darwin"
++			;;
+ 		*)
+ 			result "no"
+ 			;;
+--- a/cnf/configure_type_sel.sh
++++ b/cnf/configure_type_sel.sh
+@@ -114,10 +114,16 @@
+ 	fi
+ 
+ 	# Most targets use .data but PowerPC has .sdata instead
+-	if try_compile && try_objdump -j .data -j .sdata -s; then
+-		bo=`grep '11' try.out | grep '44' | sed -e 's/  .*//' -e 's/[^1-8]//g' -e 's/\([1-8]\)\1/\1/g'`
++	# unpins darwin cross: derive byte order from the preprocessor
++	# (__BYTE_ORDER__ reflects the target under the cross compiler);
++	# no objdump on Mach-O. Correct for both buildmini and target.
++	try_start
++	try_includes "stdint.h" "sys/types.h"
++	try_add "int _beprobe[(__BYTE_ORDER__==__ORDER_LITTLE_ENDIAN__)?1:-1];"
++	if try_compile; then
++		if [ "$uvsize" = 8 ]; then bo=12345678; else bo=1234; fi
+ 	else
+-		bo=''
++		if [ "$uvsize" = 8 ]; then bo=87654321; else bo=4321; fi
+ 	fi
+ 
+ 	if [ -n "$bo" ]; then
+--- a/cnf/configure_type.sh
++++ b/cnf/configure_type.sh
+@@ -38,19 +38,18 @@
+ 		return
+ 	fi
+ 
+-	if not try_readelf --syms > try.out 2>>$cfglog; then
+-		result 'unknown'
+-		die "Cannot determine sizeof($2), use -D${1}size="
+-		return
+-	fi
+-
+-	result=`grep foo try.out | sed -r -e 's/.*: [0-9]+ +//' -e 's/ .*//' -e 's/^0+//g'`
+-	if [ -z "$result" ]; then
+-		result "unknown"
+-		die "Cannot determine sizeof($2)"
+-	elif [ "$result" -gt 0 ]; then
+-		define $1 "$result"
+-		result $result\ `bytes $result`
++	# unpins darwin cross: no ELF readelf on a Mach-O build host -- size
++	# via a compile-only probe (cross-safe for buildmini and target).
++	__cssz=0
++	for __csk in 1 2 4 8 12 16 3 6 10 5 7 9 11 13 14 15; do
++		try_start
++		try_includes $3
++		try_add "int _csprobe[(sizeof($2)==$__csk)?1:-1];"
++		if try_compile; then __cssz=$__csk; break; fi
++	done
++	if [ "$__cssz" -gt 0 ]; then
++		define $1 "$__cssz"
++		result $__cssz\ `bytes $__cssz`
+ 	else
+ 		result "unknown"
+ 		die "Cannot determine sizeof($2)"
+--- /dev/null
++++ b/cnf/hints/darwin
+@@ -0,0 +1,22 @@
++# Darwin (macOS) -- unpins perl-cross port. Values perl-cross cannot probe
++# without running a target binary; mirrors cnf/hints/linux, darwin-corrected.
++d_voidsig='define'
++d_nanosleep='define'
++d_clock_gettime='define'
++d_clock_getres='define'
++d_clock_nanosleep='undef'
++d_clock='define'
++
++usemallocwrap='define'
++
++# libraries to test (everything else lives in libSystem)
++libswanted='m pthread'
++
++# macOS has no /proc; perl uses _NSGetExecutablePath instead.
++d_procselfexe='undef'
++
++# ino_t is an unsigned 64-bit __darwin_ino64_t
++st_ino_sign=1
++st_ino_size=8
++
++d_fcntl_can_lock='define'
+--- a/Makefile
++++ b/Makefile
+@@ -146,7 +146,7 @@
+ perl$x: LDFLAGS += -Wl,-rpath,$(archlib)/CORE
+ endif
+ endif # or should it be "else"?
+-perl$x: LDFLAGS += -Wl,-E
++perl$x: LDFLAGS += -Wl,-export_dynamic
+ 
+ perl$x: perlmain$o $(LIBPERL) $(static_modules) static.list ext.libs
+ 	$(eval extlibs=$(shell cat ext.libs))

@@ -1,0 +1,18 @@
+installperl: skip install_name_tool unless libperl is shared.
+
+fix_dep_names gates on `$Config{useshrplib}`, but a static build sets it to
+the string 'false', which perl reads as true. It then runs install_name_tool
+on the static binary and dies (EACCES on the read-only file; there is no
+libperl.dylib regardless). Require 'true', as line 639 already does.
+
+--- a/installperl
++++ b/installperl
+@@ -753,7 +753,7 @@
+     my $file = shift;
+ 
+     $^O eq "darwin" && $Config{osvers} =~ /^(1[5-9]|[2-9])/
+-      && $Config{useshrplib}
++      && $Config{useshrplib} eq "true"
+       or return;
+ 
+     my @opts;

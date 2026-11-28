@@ -225,7 +225,9 @@
                 else base
               ) ++ perlPatches
               ++ sp.lib.optional (!crossCompiling) ./patches/makedepend-drop-engine-virtual-sysroot.patch
-              ++ sp.lib.optional (crossCompiling && !isDarwin) ./patches/errno-get-files-engine-stub.patch;
+              ++ sp.lib.optional (crossCompiling && !isDarwin) ./patches/errno-get-files-engine-stub.patch
+              ++ sp.lib.optional isDarwin ./patches/installperl-useshrplib-string-false.patch
+              ++ sp.lib.optional (crossCompiling && isDarwin) ./patches/perl-cross-darwin-macho-host.patch;
               configureFlags = (if crossCompiling
                 # perl-cross keeps ONE value per -A<var>= (a second -Accflags=
                 # replaces the first, where perl's Configure appends), so on a cross
@@ -279,21 +281,7 @@
                   "-Accflags=-fno-strict-aliasing"
                   "-Accflags=-fwrapv"
                 ];
-              # macOS: installperl gates install_name_tool on `&& useshrplib`, but
-              # the value is the string 'false' (truthy in perl) so it runs on the
-              # static build and dies (EACCES on the read-only binary; there is no
-              # libperl.dylib regardless). Require eq 'true' so it's skipped.
-              postPatch = crossBasePostPatch + (if isDarwin then ''
-                substituteInPlace installperl \
-                  --replace-fail '&& $Config{useshrplib}' '&& $Config{useshrplib} eq "true"'
-              '' else "")
-              # perl-cross assumes an ELF build host (readelf/objdump); on a
-              # darwin build host (the darwin<->darwin cross) those tools are
-              # absent and useless on Mach-O, so rewrite the two probes that
-              # need them to compile-only, cross-safe equivalents.
-              + sp.lib.optionalString (crossCompiling && isDarwin) ''
-                ${pkgs.buildPackages.perl}/bin/perl ${./src/cross_darwin.pl}
-              '';
+              postPatch = crossBasePostPatch;
               preConfigure = (old.preConfigure or "")
                 # perl-cross never adds -fno-strict-aliasing -fwrapv on its own, and
                 # without them every cross perl dies on its first module (armv7l
@@ -309,7 +297,7 @@
                 # perl-cross's READELF/OBJDUMP env knobs at `llvm readelf`/`llvm objdump`
                 # (GNU-compatible), locating the multitool the same way build-B does.
                 # Linux cross only (the darwin cross rewrites these probes via
-                # cross_darwin.pl above; native/i686 use perl's own Configure).
+                # perl-cross-darwin-macho-host.patch; native/i686 use perl's own Configure).
                 + sp.lib.optionalString (crossCompiling && !isDarwin) ''
                   export READELF="${ep.bcIntrospect} readelf"
                   export OBJDUMP="${ep.bcIntrospect} objdump"
